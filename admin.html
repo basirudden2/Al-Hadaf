@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Admin | Al Hadaf</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600&family=Hind+Siliguri:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+
+<section id="loginView" class="login" hidden>
+  <form id="loginForm" class="login-card">
+    <img src="logo-light.png" alt="Al Hadaf" class="login-logo" width="661" height="357">
+    <h1>Admin login</h1>
+    <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+    <p class="err" id="loginErr" hidden></p>
+    <button class="btn primary block" type="submit">Log in</button>
+  </form>
+</section>
+
+<div id="appView" hidden>
+  <header class="topbar">
+    <div class="topbar-row">
+      <a href="#orders" class="top-logo"><img src="logo-light.png" alt="Al Hadaf" width="661" height="357"><span>Admin</span></a>
+      <nav class="tabs" id="tabs">
+        <a href="#orders" data-tab="orders">Orders</a>
+        <a href="#products" data-tab="products">Products</a>
+        <a href="#categories" data-tab="categories">Categories</a>
+        <a href="#settings" data-tab="settings">Shop info</a>
+      </nav>
+      <div class="top-actions">
+        <a href="/" target="_blank" rel="noopener" class="btn ghost sm">View site</a>
+        <button class="btn ghost sm" id="logoutBtn">Log out</button>
+      </div>
+    </div>
+  </header>
+  <main id="main" class="main"></main>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="admin.js"></script>
+</body>
+</html>

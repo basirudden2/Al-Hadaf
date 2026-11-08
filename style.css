@@ -333,3 +333,5 @@ legend { font-size: 14px; font-weight: 500; padding: 0; margin-bottom: 8px; }
 .bkash-box p { margin: 0 0 10px; }
 .summary { padding-top: 14px; margin: 4px 0 14px; border-top: 1px solid var(--line); }
 .success { text-align: center; padding-top: 10px; }
+.stock-note { margin: 8px 0 0; color: #B5630A; }
+@media (prefers-color-scheme: dark) { .stock-note { color: var(--orange); } }

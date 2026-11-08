@@ -3,6 +3,9 @@
 const STR = {
   en: {
     langSwitch: 'বাংলা',
+    loading: 'Loading…', onlyLeft: n => `Only ${n} left`, emptyList: 'New products are coming soon.',
+    errStock: 'Some items in your cart just sold out. Please check your cart.', errServer: 'Could not place the order. Check your connection and try again.',
+    placing: 'Placing order…', alsoWa: 'Also send on WhatsApp',
     announce: 'Cash on delivery all over Bangladesh. Easy size exchange within 7 days.',
     menu: 'Menu', close: 'Close', home: 'Home', items: 'items',
     sortDefault: 'Featured', sortLow: 'Price: low to high', sortHigh: 'Price: high to low',
@@ -43,7 +46,7 @@ const STR = {
     errName: 'Enter your name.', errPhone: 'Enter a valid mobile number, like 01712345678.',
     errAddress: 'Enter your full address so the courier can find you.', errTrx: 'Enter the bKash/Nagad Transaction ID.',
     thanks: 'Jazakallahu khairan!', orderNo: 'Your order number',
-    thanksText: 'WhatsApp has opened with your order. Send the message and we will call you to confirm.',
+    thanksText: 'We have received your order and will call you soon to confirm it.',
     sendWa: 'Send order on WhatsApp',
     wa: { order: 'New order', name: 'Name', phone: 'Mobile', address: 'Address', area: 'Area', items: 'Items', pay: 'Payment', note: 'Note' },
     legal: 'Legal', information: 'Information', company: 'Company', service: 'Customer service', payBy: 'You can pay by',
@@ -65,6 +68,9 @@ const STR = {
 
   bn: {
     langSwitch: 'English',
+    loading: 'লোড হচ্ছে…', onlyLeft: n => `মাত্র ${n}টি বাকি`, emptyList: 'নতুন পণ্য শিগগিরই আসছে।',
+    errStock: 'কার্টের কিছু পণ্য এইমাত্র শেষ হয়ে গেছে। কার্ট দেখে নিন।', errServer: 'অর্ডার করা যায়নি। ইন্টারনেট চেক করে আবার চেষ্টা করুন।',
+    placing: 'অর্ডার হচ্ছে…', alsoWa: 'WhatsApp-এও পাঠান',
     announce: 'সারা বাংলাদেশে ক্যাশ অন ডেলিভারি। ৭ দিনের মধ্যে সহজ সাইজ এক্সচেঞ্জ।',
     menu: 'মেনু', close: 'বন্ধ করুন', home: 'হোম', items: 'টি পণ্য',
     sortDefault: 'বাছাই করা', sortLow: 'দাম: কম থেকে বেশি', sortHigh: 'দাম: বেশি থেকে কম',
@@ -105,7 +111,7 @@ const STR = {
     errName: 'আপনার নাম লিখুন।', errPhone: 'সঠিক মোবাইল নম্বর দিন, যেমন 01712345678।',
     errAddress: 'পুরো ঠিকানা লিখুন, যাতে কুরিয়ার সহজে খুঁজে পায়।', errTrx: 'bKash/Nagad-এর Transaction ID দিন।',
     thanks: 'জাযাকাল্লাহু খাইরান!', orderNo: 'আপনার অর্ডার নম্বর',
-    thanksText: 'WhatsApp-এ অর্ডারটি খুলেছে। মেসেজটি পাঠান, আমরা ফোন করে কনফার্ম করব।',
+    thanksText: 'আপনার অর্ডার পেয়েছি। শিগগিরই ফোন করে কনফার্ম করব।',
     sendWa: 'WhatsApp-এ অর্ডার পাঠান',
     wa: { order: 'নতুন অর্ডার', name: 'নাম', phone: 'মোবাইল', address: 'ঠিকানা', area: 'এলাকা', items: 'পণ্য', pay: 'পেমেন্ট', note: 'নোট' },
     legal: 'নীতিমালা', information: 'তথ্য', company: 'আমাদের সম্পর্কে', service: 'গ্রাহক সেবা', payBy: 'পেমেন্ট করতে পারবেন',
@@ -125,3 +131,13 @@ const STR = {
     }
   }
 };
+
+// ===== সাইজ গাইড টেবিল — নিজের মাপ দিয়ে বদলে নিন =====
+const SIZE_CHART = [
+  ['XS/52', '52"', '40"', '5\'0" – 5\'3"'],
+  ['S/54', '54"', '42"', '5\'3" – 5\'5"'],
+  ['M/56', '56"', '44"', '5\'5" – 5\'7"'],
+  ['L/58', '58"', '46"', '5\'7" – 5\'9"'],
+  ['XL/60', '60"', '48"', '5\'9" – 5\'11"'],
+  ['2XL/62', '62"', '50"', '5\'11" – 6\'2"']
+];

@@ -1,0 +1,24 @@
+{
+  // Al Hadaf — Cloudflare config
+  "name": "al-hadaf",
+  "main": "worker.js",
+  "compatibility_date": "2025-09-01",
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": ".",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "alhadaf-db",
+      "database_id": "d4972684-47d8-43cd-8584-86b497c515c4"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "IMAGES",
+      "id": "9aae9e617eb54206a4e7ab5c759cc9d9"
+    }
+  ]
+}

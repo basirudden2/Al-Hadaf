@@ -12,22 +12,46 @@
   };
 
   let lang = store.get(LANG_KEY) === 'bn' ? 'bn' : 'en';
-  let cart = loadCart();
+  let SHOP = { whatsapp: '', phone: '', email: '', bkash: '', facebook: '', instagram: '', address: { en: '', bn: '' }, deliveryInside: 0, deliveryOutside: 0, announce: { en: '', bn: '' } };
+  let CATEGORIES = [{ id: 'all', name: { en: 'All', bn: 'সব' } }];
+  let PRODUCTS = [];
+  let loaded = false;
+  let cart = [];
   let sortBy = 'default';
+  const PLACEHOLDER = { fragrance: 'bottle', accessories: 'cap', 'father-son': 'combo' };
+
+  async function loadStore() {
+    const r = await fetch('/api/store');
+    if (!r.ok) throw new Error('store');
+    const d = await r.json();
+    const s = d.shop;
+    SHOP = {
+      whatsapp: s.whatsapp, phone: s.phone, email: s.email, bkash: s.bkash, facebook: s.facebook, instagram: s.instagram,
+      address: { en: s.address_en, bn: s.address_bn }, announce: { en: s.announce_en, bn: s.announce_bn },
+      deliveryInside: Number(s.delivery_inside) || 0, deliveryOutside: Number(s.delivery_outside) || 0
+    };
+    CATEGORIES = [{ id: 'all', name: { en: 'All', bn: 'সব' } }, ...d.categories];
+    PRODUCTS = d.products.map(p => ({ ...p, shape: PLACEHOLDER[p.cat] || 'thobe' }));
+    loaded = true;
+    cart = loadCart();
+  }
 
   // ---------- helpers ----------
   const t = (k, ...a) => { const v = STR[lang][k] ?? STR.en[k] ?? k; return typeof v === 'function' ? v(...a) : v; };
-  const L = o => (o == null ? '' : typeof o === 'string' ? o : (o[lang] ?? o.en));
+  const L = o => (o == null ? '' : typeof o === 'string' ? o : (o[lang] || o.en || ''));
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const money = n => (lang === 'bn' ? '৳' : 'BDT ') + Number(n).toLocaleString('en-IN');
   const byId = id => PRODUCTS.find(p => p.id === id);
   const catOf = id => CATEGORIES.find(c => c.id === id);
   const waLink = text => `https://wa.me/${SHOP.whatsapp}` + (text ? `?text=${encodeURIComponent(text)}` : '');
+  const sizeHtml = s => esc(s.label);
 
+  // কার্টে থাকে { sizeId, qty }; পণ্য আর সাইজ খুঁজে নেওয়া হয় স্টোর থেকে
+  const findSize = sizeId => { for (const p of PRODUCTS) { const s = p.sizes.find(x => x.id === sizeId); if (s) return { p, s }; } return null; };
   function loadCart() {
     try {
       const d = JSON.parse(store.get(CART_KEY) || '[]');
-      return Array.isArray(d) ? d.filter(i => byId(i.id) && i.qty > 0) : [];
+      return Array.isArray(d) ? d.filter(i => i && findSize(i.sizeId) && i.qty > 0) : [];
     } catch (e) { return []; }
   }
   const saveCart = () => store.set(CART_KEY, JSON.stringify(cart));
@@ -78,7 +102,8 @@
       const p = PRODUCTS.find(x => x.cat === c.id);
       return `<a class="tile" href="#/c/${c.id}"><div class="tile-media">${p ? media(p, 0) : ''}</div><span>${esc(L(c.name))}</span></a>`;
     }).join('');
-    const fresh = PRODUCTS.filter(p => p.isNew).slice(0, 4);
+    const newOnes = PRODUCTS.filter(p => p.isNew);
+    const fresh = (newOnes.length ? newOnes : PRODUCTS).slice(0, 4);
     const combo = PRODUCTS.find(p => p.cat === 'father-son');
     return `
     <section class="hero">
@@ -99,7 +124,7 @@
     </section>
     <section class="wrap block">
       <div class="block-head"><h2 class="block-title">${t('newArrivals')}</h2><a class="link" href="#/c/all">${t('viewAll')}</a></div>
-      <div class="grid">${fresh.map(card).join('')}</div>
+      ${fresh.length ? `<div class="grid">${fresh.map(card).join('')}</div>` : `<p class="muted">${t('emptyList')}</p>`}
     </section>
     ${combo ? `<section class="wrap block"><div class="promo">
       <div class="promo-media">${media(combo, 0)}</div>
@@ -126,18 +151,19 @@
           </select>
         </div>
       </div>
-      <div class="grid">${list.map(card).join('')}</div>
+      ${list.length ? `<div class="grid">${list.map(card).join('')}</div>` : `<p class="muted">${t('emptyList')}</p>`}
     </div>`;
   }
 
   function pageProduct(id) {
     const p = byId(id);
     if (!p) return pageNotFound();
-    const c = catOf(p.cat);
+    const c = catOf(p.cat) || CATEGORIES[0];
     const vs = views(p);
     const siblings = PRODUCTS.filter(x => x.group === p.group);
     const related = PRODUCTS.filter(x => x.cat === p.cat && x.group !== p.group).slice(0, 4);
-    const fill = related.length < 4 ? PRODUCTS.filter(x => x.cat !== p.cat && x.shape === 'thobe' && x.group !== p.group).slice(0, 4 - related.length) : [];
+    const fill = related.length < 4 ? PRODUCTS.filter(x => x.cat !== p.cat && x.group !== p.group).slice(0, 4 - related.length) : [];
+    const rel = related.concat(fill);
     return `<div class="wrap page pdp" data-id="${p.id}">
       <nav class="crumbs"><a href="#/">${t('home')}</a><span>/</span><a href="#/c/${c.id}">${esc(L(c.name))}</a><span>/</span><span>${esc(L(p.name))}</span></nav>
       <div class="pdp-grid">
@@ -153,8 +179,9 @@
           <p class="opt-label">${t('color')}: <strong>${esc(L(p.color))}</strong></p>
           ${siblings.length > 1 ? `<div class="swatches">${siblings.map(s => `<a class="swatch" href="#/p/${s.id}" style="--sw:${s.color.hex}" aria-label="${esc(L(s.color))}" ${s.id === p.id ? 'aria-current="true"' : ''}></a>`).join('')}</div>` : ''}
 
-          <div class="opt-row"><p class="opt-label">${t('size')}</p>${p.shape === 'thobe' || p.shape === 'combo' ? `<a class="link" href="#/page/size-guide">${t('sizeGuide')}</a>` : ''}</div>
-          <div class="sizes">${p.sizes.map(s => `<button class="size" data-size="${esc(s.label)}" aria-pressed="${p.sizes.length === 1}" ${s.stock === false ? `disabled title="${t('soldOut')}"` : ''}>${esc(s.label)}</button>`).join('')}</div>
+          <div class="opt-row"><p class="opt-label">${t('size')}</p>${(p.shape === 'thobe' || p.shape === 'combo') && p.sizes.length > 1 ? `<a class="link" href="#/page/size-guide">${t('sizeGuide')}</a>` : ''}</div>
+          <div class="sizes">${p.sizes.map(s => `<button class="size" data-size="${s.id}" aria-pressed="${p.sizes.length === 1 && s.stock > 0}" ${s.stock > 0 ? '' : `disabled title="${t('soldOut')}"`}>${sizeHtml(s)}</button>`).join('')}</div>
+          <p class="muted small stock-note" id="stockNote"></p>
           <p class="error" id="sizeErr" hidden>${t('pickSize')}</p>
 
           <div class="buy-row">
@@ -168,15 +195,12 @@
             <p>${esc(L(p.desc))}</p>
             <ul>${(L(p.features) || []).map(f => `<li>${esc(f)}</li>`).join('')}</ul>
           </div>
-          <details class="acc" open><summary>${t('materials')}</summary><ul><li>${esc(L(p.fabric))}</li>${p.gsm ? `<li>GSM ${p.gsm}</li>` : ''}</ul></details>
+          ${L(p.fabric) || p.gsm ? `<details class="acc" open><summary>${t('materials')}</summary><ul>${L(p.fabric) ? `<li>${esc(L(p.fabric))}</li>` : ''}${p.gsm ? `<li>GSM ${p.gsm}</li>` : ''}</ul></details>` : ''}
           ${p.shape === 'thobe' || p.shape === 'combo' ? `<details class="acc"><summary>${t('care')}</summary><ul>${STR[lang].careList.map(x => `<li>${x}</li>`).join('')}</ul></details>` : ''}
           <details class="acc"><summary>${t('deliveryExchange')}</summary><p>${t('deliveryText', money(SHOP.deliveryInside), money(SHOP.deliveryOutside))}</p></details>
         </div>
       </div>
-      <section class="block">
-        <h2 class="block-title">${t('related')}</h2>
-        <div class="grid">${related.concat(fill).map(card).join('')}</div>
-      </section>
+      ${rel.length ? `<section class="block"><h2 class="block-title">${t('related')}</h2><div class="grid">${rel.map(card).join('')}</div></section>` : ''}
     </div>`;
   }
 
@@ -189,9 +213,9 @@
       body = `<p>${t('sizeIntro')}</p><div class="table-scroll"><table><thead><tr>${cols.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${SIZE_CHART.map(r => `<tr>${r.map(x => `<td>${esc(x)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
     } else if (slug === 'contact') {
       body = STR[lang].pageText.contact + `<ul class="contact-list">
-        <li><a href="tel:${SHOP.phone}">${SHOP.phone}</a></li>
+        <li><a href="tel:${esc(SHOP.phone)}">${esc(SHOP.phone)}</a></li>
         <li><a href="${waLink()}" target="_blank" rel="noopener">WhatsApp</a></li>
-        <li><a href="mailto:${SHOP.email}">${SHOP.email}</a></li>
+        ${SHOP.email ? `<li><a href="mailto:${esc(SHOP.email)}">${esc(SHOP.email)}</a></li>` : ''}
         <li>${esc(L(SHOP.address))}</li></ul>`;
     } else {
       body = STR[lang].pageText[slug];
@@ -205,6 +229,7 @@
 
   // ---------- router ----------
   function route() {
+    if (!loaded) { $('#view').innerHTML = `<div class="wrap page"><p class="muted">${t('loading')}</p></div>`; return; }
     const parts = (location.hash.replace(/^#\/?/, '') || '').split('/');
     const view = $('#view');
     let active = '';
@@ -229,7 +254,9 @@
   function bindProduct(p) {
     if (!p) return;
     const root = $('.pdp');
-    let size = p.sizes.length === 1 ? p.sizes[0].label : null;
+    let size = p.sizes.length === 1 && p.sizes[0].stock > 0 ? p.sizes[0].id : null;
+    const note = () => { const s = p.sizes.find(x => x.id === size); $('#stockNote').textContent = s && s.stock <= 3 ? t('onlyLeft', s.stock) : ''; };
+    note();
     let qty = 1;
     const vs = views(p);
     root.addEventListener('click', e => {
@@ -241,9 +268,10 @@
       }
       const sb = e.target.closest('.size');
       if (sb && !sb.disabled) {
-        size = sb.dataset.size;
+        size = Number(sb.dataset.size);
         root.querySelectorAll('.size').forEach(b => b.setAttribute('aria-pressed', b === sb));
         $('#sizeErr').hidden = true;
+        note();
         return;
       }
       const q = e.target.closest('[data-q]');
@@ -251,7 +279,7 @@
       const add = e.target.closest('#addBtn'), buy = e.target.closest('#buyBtn');
       if (add || buy) {
         if (!size) { $('#sizeErr').hidden = false; return; }
-        addToCart(p.id, size, qty);
+        addToCart(size, qty);
         if (buy) openCheckout(); else toast(t('added', L(p.name)));
       }
     });
@@ -279,10 +307,10 @@
       <div><h3>${t('legal')}</h3><ul>${link('shipping')}${link('exchange')}${link('privacy')}</ul></div>
       <div><h3>${t('information')}</h3><ul>${link('size-guide')}${link('about')}${link('contact')}</ul></div>
       <div><h3>${t('service')}</h3><ul>
-        <li><a href="tel:${SHOP.phone}">${SHOP.phone}</a></li>
-        <li><a href="mailto:${SHOP.email}">${SHOP.email}</a></li>
-        <li><a href="${SHOP.facebook}" target="_blank" rel="noopener">Facebook</a></li>
-        <li><a href="${SHOP.instagram}" target="_blank" rel="noopener">Instagram</a></li></ul></div>
+        <li><a href="tel:${esc(SHOP.phone)}">${esc(SHOP.phone)}</a></li>
+        ${SHOP.email ? `<li><a href="mailto:${esc(SHOP.email)}">${esc(SHOP.email)}</a></li>` : ''}
+        ${SHOP.facebook ? `<li><a href="${esc(SHOP.facebook)}" target="_blank" rel="noopener">Facebook</a></li>` : ''}
+        ${SHOP.instagram ? `<li><a href="${esc(SHOP.instagram)}" target="_blank" rel="noopener">Instagram</a></li>` : ''}</ul></div>
     </div>
     <div class="wrap foot-bottom">
       <div class="pay"><span>${t('payBy')}</span><span class="pay-chip">bKash</span><span class="pay-chip">Nagad</span><span class="pay-chip">${t('cod')}</span></div>
@@ -291,13 +319,14 @@
   }
 
   // ---------- cart ----------
-  function addToCart(id, size, qty) {
-    const f = cart.find(i => i.id === id && i.size === size);
-    if (f) f.qty = Math.min(10, f.qty + qty); else cart.push({ id, size, qty });
+  function addToCart(sizeId, qty) {
+    const max = findSize(sizeId).s.stock;
+    const f = cart.find(i => i.sizeId === sizeId);
+    if (f) f.qty = Math.min(max, 10, f.qty + qty); else cart.push({ sizeId, qty: Math.min(max, qty) });
     saveCart(); renderCartCount();
   }
   const totals = area => {
-    const sub = cart.reduce((s, i) => s + byId(i.id).price * i.qty, 0);
+    const sub = cart.reduce((s, i) => s + findSize(i.sizeId).p.price * i.qty, 0);
     const del = cart.length ? (area === 'outside' ? SHOP.deliveryOutside : SHOP.deliveryInside) : 0;
     return { sub, del, total: sub + del };
   };
@@ -314,13 +343,13 @@
       return;
     }
     $('#cartBody').innerHTML = head + `<div class="cart-items">${cart.map((i, idx) => {
-      const p = byId(i.id);
+      const { p, s } = findSize(i.sizeId);
       return `<div class="ci">
         <a class="ci-media" href="#/p/${p.id}" data-close>${media(p, 0)}</a>
         <div class="ci-info">
           <h4>${esc(L(p.name))}</h4>
           <p>${esc(L(p.color))}</p>
-          <p>${t('sizeIs', esc(i.size))}</p>
+          <p>${t('sizeIs', esc(s.label))}</p>
           <div class="ci-row">
             <div class="qty sm"><button data-ci="${idx}" data-d="-1" aria-label="−">−</button><span>${i.qty}</span><button data-ci="${idx}" data-d="1" aria-label="+">+</button></div>
             <strong>${money(p.price * i.qty)}</strong>
@@ -341,7 +370,7 @@
     if (b) {
       const i = cart[Number(b.dataset.ci)];
       i.qty += Number(b.dataset.d);
-      if (i.qty < 1) cart.splice(Number(b.dataset.ci), 1); else i.qty = Math.min(10, i.qty);
+      if (i.qty < 1) cart.splice(Number(b.dataset.ci), 1); else i.qty = Math.min(10, findSize(i.sizeId).s.stock, i.qty);
       saveCart(); renderCart(); return;
     }
     if (e.target.closest('#toCheckout')) openCheckout();
@@ -389,7 +418,7 @@
     $('#checkoutDialog').showModal();
   }
 
-  function submitOrder(form) {
+  async function submitOrder(form) {
     const f = n => form.elements.namedItem(n).value.trim();
     const name = f('custName'), phone = f('custPhone').replace(/[\s-]/g, ''), address = f('custAddress');
     const area = form.elements.area.value, pay = form.elements.payment.value, trx = f('trx'), note = f('note');
@@ -398,25 +427,42 @@
     if (!/^(?:\+?88)?01[3-9]\d{8}$/.test(phone)) errs.push(t('errPhone'));
     if (address.length < 8) errs.push(t('errAddress'));
     if (pay === 'bkash' && trx.length < 6) errs.push(t('errTrx'));
-    if (errs.length) { $('#coErr').innerHTML = errs.join('<br>'); $('#coErr').hidden = false; return; }
+    const showErr = m => { $('#coErr').innerHTML = m; $('#coErr').hidden = false; };
+    if (errs.length) return showErr(errs.join('<br>'));
 
-    const W = STR[lang].wa, tt = totals(area);
-    const orderId = 'AH' + Date.now().toString().slice(-6);
-    const lines = [
-      `${W.order}: ${orderId}`, `${W.name}: ${name}`, `${W.phone}: ${phone}`, `${W.address}: ${address}`,
-      `${W.area}: ${area === 'outside' ? t('outside') : t('inside')}`, '', `${W.items}:`,
-      ...cart.map(i => { const p = byId(i.id); return `- ${L(p.name)}, ${L(p.color)} (${p.id}), ${i.size} x${i.qty} = ${money(p.price * i.qty)}`; }),
-      '', `${t('subtotal')}: ${money(tt.sub)}`, `${t('deliveryCharge')}: ${money(tt.del)}`, `${t('total')}: ${money(tt.total)}`,
-      `${W.pay}: ${pay === 'bkash' ? 'bKash/Nagad, TrxID ' + trx : t('cod')}`
-    ];
-    if (note) lines.push(`${W.note}: ${note}`);
-    const url = waLink(lines.join('\n'));
+    const btn = form.querySelector('[type=submit]');
+    btn.disabled = true; btn.textContent = t('placing');
+    let res, data;
+    try {
+      res = await fetch('/api/orders', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, phone, address, area, payment: pay, trx, note, lang, items: cart.map(i => ({ sizeId: i.sizeId, qty: i.qty })) })
+      });
+      data = await res.json();
+    } catch (e) { data = null; }
+    if (!res || !res.ok || !data || !data.ok) {
+      btn.disabled = false; btn.textContent = t('confirm');
+      if (data && data.error === 'stock') { await refresh(); return showErr(t('errStock')); }
+      return showErr(data && data.message && res.status === 400 ? esc(data.message) : t('errServer'));
+    }
 
+    const W = STR[lang].wa;
+    const msg = [
+      `${W.order}: ${data.orderNo}`, `${W.name}: ${name}`, `${W.phone}: ${phone}`, '', `${W.items}:`,
+      ...data.items.map(l => `- ${l.name}, ${l.color} (${l.code}), ${l.size} x${l.qty}`),
+      `${t('total')}: ${money(data.total)}`
+    ].join('\n');
     $('#checkoutBody').innerHTML = `<button class="icon-btn dlg-x" data-close aria-label="${t('close')}">×</button>
-      <div class="success"><h2>${t('thanks')}</h2><p>${t('orderNo')} <strong>${orderId}</strong></p><p class="muted">${t('thanksText')}</p>
-      <a class="btn btn-dark btn-block" href="${url}" target="_blank" rel="noopener">${t('sendWa')}</a></div>`;
-    window.open(url, '_blank', 'noopener');
+      <div class="success"><h2>${t('thanks')}</h2><p>${t('orderNo')} <strong>${data.orderNo}</strong></p>
+      <p class="row total"><span>${t('total')}</span><span>${money(data.total)}</span></p>
+      <p class="muted">${t('thanksText')}</p>
+      ${SHOP.whatsapp ? `<a class="btn btn-outline btn-block" href="${waLink(msg)}" target="_blank" rel="noopener">${t('alsoWa')}</a>` : ''}</div>`;
     cart = []; saveCart(); renderCartCount();
+    refresh();
+  }
+
+  async function refresh() {
+    try { await loadStore(); applyChrome(); route(); } catch (e) { /* keep current view */ }
   }
 
   // ---------- dialogs, toast, language ----------
@@ -444,7 +490,7 @@
   function applyChrome() {
     document.documentElement.lang = lang;
     document.body.classList.toggle('bn', lang === 'bn');
-    $('#announce').textContent = t('announce');
+    $('#announce').textContent = L(SHOP.announce) || t('announce');
     $('#langBtn').textContent = t('langSwitch');
     $('#menuOpen').setAttribute('aria-label', t('menu'));
     $('#cartOpen').setAttribute('aria-label', t('cartTitle'));
@@ -454,4 +500,7 @@
 
   applyChrome();
   route();
+  loadStore().then(() => { applyChrome(); route(); }).catch(() => {
+    $('#view').innerHTML = `<div class="wrap page"><p class="muted">${t('errServer')}</p></div>`;
+  });
 })();

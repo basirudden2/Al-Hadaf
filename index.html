@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Al Hadaf Jubba | জুমা, ঈদ আর প্রতিদিনের জুব্বা</title>
+  <meta name="description" content="সৌদি, ওমানি, কুয়েতি ও মরোক্কান স্টাইলের প্রিমিয়াম জুব্বা। সারা বাংলাদেশে ক্যাশ অন ডেলিভারি।">
+  <meta name="theme-color" content="#1A1A1A">
+  <link rel="icon" type="image/png" href="images/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-row">
+    <a href="#" class="brand" aria-label="Al Hadaf Jubba হোম">
+      <picture>
+        <source srcset="images/logo-dark.png" media="(prefers-color-scheme: dark)">
+        <img class="brand-logo" src="images/logo-light.png" alt="Al Hadaf" width="661" height="357">
+      </picture>
+    </a>
+    <nav class="nav" aria-label="মেনু">
+      <a href="#collection">কালেকশন</a>
+      <a href="#size-guide">সাইজ গাইড</a>
+      <a href="#contact">যোগাযোগ</a>
+    </nav>
+    <button class="cart-btn" id="cartOpen" aria-label="কার্ট খুলুন">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 7h12l-1 13H7L6 7Z"/><path d="M9 7a3 3 0 0 1 6 0"/></svg>
+      <span class="cart-count" id="cartCount" hidden>0</span>
+    </button>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-text">
+        <h1>জুমা, ঈদ আর প্রতিদিনের জুব্বা</h1>
+        <p>সৌদি, ওমানি, কুয়েতি আর মরোক্কান কাট। আরামদায়ক কাপড়, পরিষ্কার সেলাই, আপনার লম্বা অনুযায়ী সাইজ।</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#collection">কালেকশন দেখুন</a>
+          <a class="btn btn-ghost" href="#size-guide">সাইজ মিলিয়ে নিন</a>
+        </div>
+        <ul class="hero-facts">
+          <li>সারা দেশে ক্যাশ অন ডেলিভারি</li>
+          <li>ঢাকায় ১–২ দিনে ডেলিভারি</li>
+          <li>সাইজ না মিললে এক্সচেঞ্জ</li>
+        </ul>
+      </div>
+      <div class="hero-mark" aria-hidden="true">
+        <picture>
+          <source srcset="images/mark-dark.png" media="(prefers-color-scheme: dark)">
+          <img src="images/mark-light.png" alt="" width="661" height="276">
+        </picture>
+      </div>
+    </div>
+    <div class="pattern-band" aria-hidden="true"></div>
+  </section>
+
+  <section id="collection" class="collection">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>কালেকশন</h2>
+        <div class="filters" id="filters" aria-label="ক্যাটাগরি"></div>
+      </div>
+      <div class="grid" id="productGrid"></div>
+    </div>
+  </section>
+
+  <section id="size-guide" class="size-guide">
+    <div class="wrap size-grid">
+      <div>
+        <h2>সাইজ গাইড</h2>
+        <p>আমাদের সাইজ মানে জুব্বার লম্বা, ইঞ্চিতে। টাখনুর একটু উপর পর্যন্ত লম্বা ধরে হিসাব করা। বুক আর কাঁধের মাপ সাইজের সাথে বাড়ে, ফিটিং আরামদায়ক ঢিলেঢালা।</p>
+        <p>দুই সাইজের মাঝামাঝি হলে বড়টা নিন। তবুও না মিললে ৭ দিনের মধ্যে এক্সচেঞ্জ করতে পারবেন।</p>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>আপনার উচ্চতা</th><th>জুব্বার সাইজ</th></tr></thead>
+          <tbody>
+            <tr><td>৫'০" – ৫'২"</td><td>50</td></tr>
+            <tr><td>৫'৩" – ৫'৪"</td><td>52</td></tr>
+            <tr><td>৫'৫" – ৫'৬"</td><td>54</td></tr>
+            <tr><td>৫'৭" – ৫'৮"</td><td>56</td></tr>
+            <tr><td>৫'৯" – ৫'১১"</td><td>58</td></tr>
+            <tr><td>৬'০" বা বেশি</td><td>60</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer id="contact" class="site-footer">
+  <div class="wrap footer-grid">
+    <div>
+      <img class="footer-logo" src="images/logo-dark.png" alt="Al Hadaf" width="661" height="357">
+      <p class="footer-note" id="shopAddress"></p>
+    </div>
+    <div>
+      <h3>যোগাযোগ</h3>
+      <p><a id="shopPhone" href="#"></a></p>
+      <p><a id="shopWa" href="#" target="_blank" rel="noopener">WhatsApp-এ মেসেজ দিন</a></p>
+      <p><a id="shopFb" href="#" target="_blank" rel="noopener">Facebook পেজ</a></p>
+    </div>
+    <div>
+      <h3>ডেলিভারি ও এক্সচেঞ্জ</h3>
+      <p id="deliveryInfo"></p>
+      <p>পণ্য হাতে পেয়ে ৭ দিনের মধ্যে সাইজ এক্সচেঞ্জ করা যাবে, যদি পণ্য অব্যবহৃত থাকে।</p>
+    </div>
+  </div>
+  <div class="wrap footer-bottom">© <span id="year"></span> Al Hadaf Jubba</div>
+</footer>
+
+<a class="wa-float" id="waFloat" href="#" target="_blank" rel="noopener" aria-label="WhatsApp-এ কথা বলুন">
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2Zm0 18.2a8.2 8.2 0 0 1-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2Zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8s-.4-.1-.6.1-.7.8-.8 1-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.3-.4.3-.4.8-1.3a.5.5 0 0 0 0-.5l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.7 11.9 11.9 0 0 0 4.6 4c1.7.7 2.3.8 3.2.7a2.7 2.7 0 0 0 1.8-1.3 2.2 2.2 0 0 0 .1-1.3c0-.1-.2-.2-.4-.3Z"/></svg>
+</a>
+
+<!-- পণ্যের বিস্তারিত -->
+<dialog id="productDialog" class="pd-dialog" aria-labelledby="pdTitle">
+  <button class="dlg-close" data-close aria-label="বন্ধ করুন">×</button>
+  <div class="pd" id="pdContent"></div>
+</dialog>
+
+<!-- কার্ট -->
+<dialog id="cartDialog" class="drawer" aria-labelledby="cartTitle">
+  <div class="drawer-head">
+    <h2 id="cartTitle">আপনার কার্ট</h2>
+    <button class="dlg-close" data-close aria-label="বন্ধ করুন">×</button>
+  </div>
+  <div class="drawer-items" id="cartItems"></div>
+  <div class="drawer-foot" id="cartFoot">
+    <p class="row"><span>সাবটোটাল</span><strong id="cartSub"></strong></p>
+    <p class="hint">ডেলিভারি চার্জ চেকআউটে যোগ হবে।</p>
+    <button class="btn btn-primary btn-block" id="toCheckout">চেকআউট করুন</button>
+  </div>
+</dialog>
+
+<!-- চেকআউট -->
+<dialog id="checkoutDialog" class="checkout-dialog" aria-labelledby="coTitle">
+  <button class="dlg-close" data-close aria-label="বন্ধ করুন">×</button>
+  <div class="checkout">
+    <form id="checkoutForm" novalidate>
+      <h2 id="coTitle">অর্ডার করুন</h2>
+      <label class="field"><span>আপনার নাম</span><input name="custName" autocomplete="name" required></label>
+      <label class="field"><span>মোবাইল নম্বর</span><input name="custPhone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="01XXXXXXXXX" required></label>
+      <label class="field"><span>পুরো ঠিকানা</span><textarea name="custAddress" autocomplete="street-address" placeholder="বাসা, রোড, এলাকা, থানা, জেলা" required></textarea></label>
+
+      <fieldset class="options">
+        <legend>ডেলিভারি এলাকা</legend>
+        <label class="opt"><input type="radio" name="area" value="inside" checked><span>ঢাকার ভেতরে<small id="delIn"></small></span></label>
+        <label class="opt"><input type="radio" name="area" value="outside"><span>ঢাকার বাইরে<small id="delOut"></small></span></label>
+      </fieldset>
+
+      <fieldset class="options">
+        <legend>পেমেন্ট</legend>
+        <label class="opt"><input type="radio" name="payment" value="cod" checked><span>ক্যাশ অন ডেলিভারি<small>পণ্য হাতে পেয়ে টাকা দিন</small></span></label>
+        <label class="opt"><input type="radio" name="payment" value="bkash"><span>bKash / Nagad<small>এখনই Send Money করে Transaction ID দিন</small></span></label>
+      </fieldset>
+
+      <div class="bkash-box" id="bkashBox" hidden>
+        <p>মোট টাকা <strong id="bkashAmount"></strong> এই নম্বরে Send Money করুন: <strong id="bkashNumber"></strong></p>
+        <label class="field"><span>Transaction ID</span><input name="trx" autocomplete="off" placeholder="যেমন 9A7B6C5D4E"></label>
+      </div>
+
+      <label class="field"><span>নোট (ঐচ্ছিক)</span><textarea name="note" placeholder="যেমন: কম্বোতে ছেলের সাইজ 6-7 বছর"></textarea></label>
+
+      <div class="summary" id="coSummary"></div>
+      <div class="error" id="coError" hidden></div>
+      <button class="btn btn-primary btn-block" type="submit">অর্ডার কনফার্ম করুন</button>
+    </form>
+
+    <div class="success" id="coSuccess" hidden>
+      <h2>জাযাকাল্লাহু খাইরান!</h2>
+      <p>আপনার অর্ডার নম্বর <strong id="orderId"></strong></p>
+      <p>WhatsApp খুলেছে, সেখানে মেসেজটি পাঠিয়ে দিন। আমরা ফোন করে অর্ডার কনফার্ম করব।</p>
+      <a class="btn btn-primary btn-block" id="waSend" href="#" target="_blank" rel="noopener">WhatsApp-এ অর্ডার পাঠান</a>
+    </div>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="js/products.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -1,17 +1,30 @@
-// ===== Al Hadaf — admin panel =====
+// ===== Al Hadaf — admin panel (v4) =====
 (function () {
   'use strict';
 
   const $ = (s, el = document) => el.querySelector(s);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const money = n => 'BDT ' + Number(n || 0).toLocaleString('en-IN');
+  const num = n => Number(n || 0).toLocaleString('en-IN');
   const STATUSES = [
     ['new', 'New'], ['confirmed', 'Confirmed'], ['shipped', 'Shipped'], ['delivered', 'Delivered'], ['cancelled', 'Cancelled']
   ];
+  const stLabel = k => (STATUSES.find(s => s[0] === k) || [k, k])[1];
   const THOBE_SIZES = ['XS/52', 'S/54', 'M/56', 'L/58', 'XL/60', '2XL/62'];
   const KIDS_SIZES = ['4Y', '6Y', '8Y', '10Y', '12Y'];
+  const MEAS_NAMES = { length: 'Length', chest: 'Chest', shoulder: 'Shoulder', sleeve: 'Sleeve', neck: 'Neck', cuff: 'Sleeve opening', waist: 'Waist', height: 'Height' };
+  const plural = (n, w) => `${num(n)} ${w}${n === 1 ? '' : 's'}`;
+  const toDate = s => new Date(String(s).replace(' ', 'T') + 'Z');
+  const fmtWhen = s => toDate(s).toLocaleString('en-GB', { timeZone: 'Asia/Dhaka', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const ago = s => {
+    const m = Math.round((Date.now() - toDate(s)) / 60000);
+    if (m < 1) return 'just now'; if (m < 60) return m + ' min ago';
+    const h = Math.round(m / 60); if (h < 24) return h + ' h ago';
+    return fmtWhen(s);
+  };
 
-  let categories = [], products = [], orderFilter = '', orderQuery = '';
+  let categories = [], products = [], orderFilter = '', orderQuery = '', orderFrom = '', orderTo = '', orderCustom = false, lastOrders = [];
+  let viewTimer = null;
 
   // ---------- API ----------
   async function api(path, opts = {}) {
@@ -36,9 +49,14 @@
   }
   const fail = e => { if (e.message !== 'auth') toast(e.message, true); };
 
+  async function uploadFile(file) {
+    const blob = await compress(file);
+    return (await api('upload', { method: 'POST', body: blob, headers: { 'content-type': blob.type } })).key;
+  }
+
   // ---------- login ----------
   function showLogin() { $('#appView').hidden = true; $('#loginView').hidden = false; $('#loginForm').password.focus(); }
-  function showApp() { $('#loginView').hidden = true; $('#appView').hidden = false; route(); }
+  function showApp() { $('#loginView').hidden = true; $('#appView').hidden = false; route(); pollBadges(); }
 
   $('#loginForm').addEventListener('submit', async e => {
     e.preventDefault();
@@ -54,56 +72,185 @@
   });
   $('#logoutBtn').addEventListener('click', async () => { try { await api('logout', { method: 'POST' }); } catch (e) { /* ignore */ } showLogin(); });
 
+  // ---------- sidebar (mobile) ----------
+  const setMenu = open => { document.body.classList.toggle('menu-open', open); $('#menuToggle').setAttribute('aria-expanded', open); };
+  $('#menuToggle').addEventListener('click', () => setMenu(!document.body.classList.contains('menu-open')));
+  $('#sideBackdrop').addEventListener('click', () => setMenu(false));
+  $('#tabs').addEventListener('click', e => { if (e.target.closest('a')) setMenu(false); });
+
+  // ---------- badges: নতুন অর্ডার আর না-পড়া চ্যাট ----------
+  let badgeTimer, lastUnread = -1;
+  async function pollBadges() {
+    clearTimeout(badgeTimer);
+    try {
+      const b = await api('badges');
+      const set = (id, n) => { const el = $(id); el.textContent = n; el.hidden = !n; };
+      set('#bOrders', b.newOrders); set('#bChats', b.unreadChats);
+      $('#bAny').hidden = !(b.newOrders || b.unreadChats);
+      const total = b.newOrders + b.unreadChats;
+      document.title = (total ? `(${total}) ` : '') + 'Admin | Al Hadaf';
+      if (lastUnread >= 0 && b.unreadChats > lastUnread) toast('New chat message');
+      lastUnread = b.unreadChats;
+    } catch (e) { /* ignore */ }
+    if (!$('#appView').hidden) badgeTimer = setTimeout(pollBadges, 25000);
+  }
+
   // ---------- router ----------
   function route() {
-    const [tab, arg] = (location.hash.slice(1) || 'orders').split('/');
-    document.querySelectorAll('#tabs a').forEach(a => a.setAttribute('aria-current', a.dataset.tab === (tab === 'product' ? 'products' : tab) ? 'page' : 'false'));
+    clearTimeout(viewTimer);
+    const [tab, arg] = (location.hash.slice(1) || 'dashboard').split('/');
+    const active = tab === 'product' ? 'products' : tab;
+    document.querySelectorAll('#tabs a').forEach(a => a.setAttribute('aria-current', a.dataset.tab === active ? 'page' : 'false'));
     const main = $('#main');
+    main.className = 'main' + (tab === 'chats' ? ' wide' : '');
     main.innerHTML = '<p class="muted">Loading…</p>';
-    const views = { orders: viewOrders, products: viewProducts, product: () => viewProductEdit(arg), categories: viewCategories, settings: viewSettings };
-    (views[tab] || viewOrders)().catch(fail);
+    const views = {
+      dashboard: viewDashboard, orders: viewOrders, chats: () => viewChats(arg), customers: viewCustomers,
+      products: viewProducts, product: () => viewProductEdit(arg), custom: viewCustom, gallery: viewGallery,
+      categories: viewCategories, settings: viewSettings
+    };
+    (views[tab] || viewDashboard)().catch(fail);
   }
   window.addEventListener('hashchange', () => { if (!$('#appView').hidden) { route(); window.scrollTo(0, 0); } });
+  // ড্যাশবোর্ড, চ্যাট বা কাস্টমার থেকে অর্ডারে গেলে ফিল্টার সেট হয়
+  $('#main').addEventListener('click', e => {
+    const a = e.target.closest('a[href="#orders"]');
+    if (!a) return;
+    orderFilter = a.dataset.st || ''; orderQuery = a.dataset.q || ''; orderCustom = a.hasAttribute('data-custom'); orderFrom = orderTo = '';
+  });
+
+  // ================= DASHBOARD =================
+  async function viewDashboard() {
+    const d = await api('stats');
+    const aov = d.month.n ? Math.round(d.month.rev / d.month.n) : 0;
+    const diff = d.yesterday.rev ? Math.round((d.today.rev - d.yesterday.rev) / d.yesterday.rev * 100) : null;
+    const hour = Number(new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', hour12: false }));
+    const hello = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    const todayStr = new Date().toLocaleDateString('en-GB', { timeZone: 'Asia/Dhaka', weekday: 'long', day: 'numeric', month: 'long' });
+    const todo = [
+      d.statuses.new ? `<a class="todo" href="#orders" data-st="new"><b>${d.statuses.new}</b> new order${d.statuses.new > 1 ? 's' : ''} to confirm</a>` : '',
+      d.unreadChats ? `<a class="todo" href="#chats"><b>${d.unreadChats}</b> chat${d.unreadChats > 1 ? 's' : ''} waiting for a reply</a>` : '',
+      d.statuses.confirmed ? `<a class="todo" href="#orders" data-st="confirmed"><b>${d.statuses.confirmed}</b> confirmed order${d.statuses.confirmed > 1 ? 's' : ''} to ship</a>` : '',
+      d.customOpen ? `<a class="todo" href="#orders" data-custom><b>${d.customOpen}</b> custom thobe${d.customOpen > 1 ? 's' : ''} to tailor</a>` : '',
+      d.lowStock.length ? `<a class="todo" href="#products"><b>${d.lowStock.length}</b> size${d.lowStock.length > 1 ? 's' : ''} low on stock</a>` : ''
+    ].filter(Boolean);
+    const statusTotal = STATUSES.reduce((s, [k]) => s + (d.statuses[k] || 0), 0);
+    $('#main').innerHTML = `
+      <div class="page-head"><div><h1>${hello}</h1><p class="muted">${todayStr}</p></div><a class="btn primary" href="#product/new">Add product</a></div>
+      <div class="kpis">
+        <div class="kpi"><span>Today’s sales</span><strong>${money(d.today.rev)}</strong><small>${plural(d.today.n, 'order')}${diff == null ? '' : ` · <em class="${diff >= 0 ? 'up' : 'down'}">${diff >= 0 ? '+' : ''}${diff}% vs yesterday</em>`}</small></div>
+        <div class="kpi"><span>Last 7 days</span><strong>${money(d.week.rev)}</strong><small>${plural(d.week.n, 'order')}</small></div>
+        <div class="kpi"><span>Last 30 days</span><strong>${money(d.month.rev)}</strong><small>${plural(d.month.n, 'order')}</small></div>
+        <div class="kpi"><span>Average order</span><strong>${money(aov)}</strong><small>${plural(d.customers, 'customer')} in total</small></div>
+      </div>
+      <div class="dash-grid"><div class="dash-col">
+        <section class="card chart-card"><div class="card-head"><h2>Sales, last 30 days</h2><span class="muted small">Cancelled orders not counted</span></div>${salesChart(d.daily)}</section>
+        <section class="card"><div class="card-head"><h2>Best sellers, 30 days</h2></div>
+          ${d.top.length ? `<table class="tbl"><thead><tr><th>Product</th><th class="r">Sold</th><th class="r">Sales</th></tr></thead><tbody>${d.top.map(p => `<tr><td>${esc(p.name)}<span class="muted block">${esc(p.code)}${p.color ? ' · ' + esc(p.color) : ''}</span></td><td class="r">${p.qty}</td><td class="r">${money(p.rev)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">Sales will show here after your first orders.</p>'}
+        </section>
+        <section class="card"><div class="card-head"><h2>Low stock</h2><a class="link" href="#products">Products</a></div>
+          ${d.lowStock.length ? `<ul class="mini-list">${d.lowStock.map(s => `<li><a href="#product/${s.id}"><span>${esc(s.name_en)}<span class="muted block">${esc(s.code)} · Size ${esc(s.label)}</span></span><span class="r ${s.stock ? 'warn' : 'danger'}">${s.stock ? s.stock + ' left' : 'Sold out'}</span></a></li>`).join('')}</ul>` : '<p class="muted">Every size has more than 3 in stock.</p>'}
+        </section>
+      </div><div class="dash-col">
+        <section class="card"><h2>To do</h2>${todo.length ? `<div class="todos">${todo.join('')}</div>` : '<p class="muted">All caught up. Nothing is waiting for you.</p>'}
+          ${statusTotal ? `<h3 class="sub">All orders by status</h3><div class="stbar">${STATUSES.map(([k, l]) => d.statuses[k] ? `<span class="st-${k}" style="flex:${d.statuses[k]}" title="${l}: ${d.statuses[k]}"></span>` : '').join('')}</div>
+          <ul class="stlegend">${STATUSES.map(([k, l]) => `<li><i class="st-${k}"></i>${l} <b>${d.statuses[k] || 0}</b></li>`).join('')}</ul>` : ''}
+        </section>
+        <section class="card"><div class="card-head"><h2>Recent orders</h2><a class="link" href="#orders">All orders</a></div>
+          ${d.recent.length ? `<ul class="mini-list">${d.recent.map(o => `<li><a href="#orders" data-q="${esc(o.order_no)}"><span><strong>${esc(o.order_no)}</strong><span class="muted block">${esc(o.name)} · ${ago(o.created_at)}</span></span><span class="r">${money(o.total)}<span class="badge st-${o.status}">${stLabel(o.status)}</span></span></a></li>`).join('')}</ul>` : '<p class="muted">No orders yet.</p>'}
+        </section>
+      </div></div>`;
+  }
+
+  function salesChart(daily) {
+    const days = [];
+    const now = new Date(Date.now() + 6 * 3600e3);
+    for (let i = 29; i >= 0; i--) days.push(new Date(now - i * 864e5).toISOString().slice(0, 10));
+    const by = Object.fromEntries(daily.map(r => [r.d, r]));
+    const vals = days.map(d => (by[d] ? by[d].rev : 0)), max = Math.max(...vals, 1);
+    const W = 720, H = 220, pad = 28, bw = (W - pad - 18) / 30;
+    const nice = Math.pow(10, Math.floor(Math.log10(max))), top = Math.ceil(max / nice) * nice;
+    const y = v => H - 24 - (v / top) * (H - 44);
+    const grid = [0, .5, 1].map(f => `<line x1="${pad}" x2="${W}" y1="${y(top * f)}" y2="${y(top * f)}" class="gl"/><text x="${pad - 6}" y="${y(top * f) + 4}" class="ax" text-anchor="end">${top * f >= 1000 ? Math.round(top * f / 1000) + 'k' : Math.round(top * f)}</text>`).join('');
+    const bars = days.map((d, i) => {
+      const v = vals[i], x = pad + i * bw + 2, h = Math.max(v ? 2 : 0, H - 24 - y(v));
+      const label = new Date(d + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+      return `<g><title>${label}: ${money(v)} (${by[d] ? by[d].n : 0} orders)</title><rect x="${x}" y="${y(v)}" width="${bw - 4}" height="${h}" rx="2" class="${i === 29 ? 'today' : ''}"/><rect x="${x - 2}" y="0" width="${bw}" height="${H}" fill="transparent"/>${i % 5 === 4 || i === 29 ? `<text x="${x + (bw - 4) / 2}" y="${H - 6}" class="ax" text-anchor="middle">${i === 29 ? 'Today' : label}</text>` : ''}</g>`;
+    }).join('');
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily sales for the last 30 days">${grid}${bars}</svg></div>`;
+  }
 
   // ================= ORDERS =================
   async function viewOrders() {
     const qs = new URLSearchParams();
     if (orderFilter) qs.set('status', orderFilter);
     if (orderQuery) qs.set('q', orderQuery);
+    if (orderFrom) qs.set('from', orderFrom);
+    if (orderTo) qs.set('to', orderTo);
+    if (orderCustom) qs.set('custom', '1');
     const { orders, counts } = await api('orders?' + qs);
+    lastOrders = orders;
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
     $('#main').innerHTML = `
       <div class="page-head"><h1>Orders</h1>
-        <input class="search" id="orderSearch" type="search" placeholder="Search order no, phone or name" value="${esc(orderQuery)}"></div>
+        <div class="head-tools"><button class="btn ghost sm" id="csvBtn" ${orders.length ? '' : 'disabled'}>Download CSV</button></div></div>
+      <div class="filters">
+        <input class="search" id="orderSearch" type="search" placeholder="Search order no, phone or name" value="${esc(orderQuery)}">
+        <label class="date-f">From <input type="date" id="fFrom" value="${esc(orderFrom)}"></label>
+        <label class="date-f">To <input type="date" id="fTo" value="${esc(orderTo)}"></label>
+        <label class="check"><input type="checkbox" id="fCustom" ${orderCustom ? 'checked' : ''}> Custom thobes only</label>
+      </div>
       <div class="chips">
         <button class="chip" data-st="" aria-pressed="${!orderFilter}">All <b>${total}</b></button>
         ${STATUSES.map(([k, l]) => `<button class="chip st-${k}" data-st="${k}" aria-pressed="${orderFilter === k}">${l} <b>${counts[k] || 0}</b></button>`).join('')}
       </div>
-      ${orders.length ? `<div class="orders">${orders.map(orderCard).join('')}</div>` : '<p class="empty">No orders here yet. New orders from the website will appear here.</p>'}`;
+      ${orders.length ? `<p class="muted small">${orders.length} order${orders.length > 1 ? 's' : ''} shown, total ${money(orders.filter(o => o.status !== 'cancelled').reduce((s, o) => s + o.total, 0))} without cancelled</p><div class="orders">${orders.map(orderCard).join('')}</div>`
+        : '<p class="empty">No orders match. Clear the filters, or wait for new orders from the website.</p>'}`;
 
+    const reload = () => viewOrders().catch(fail);
     $('#main').querySelector('.chips').addEventListener('click', e => {
       const b = e.target.closest('[data-st]'); if (!b) return;
-      orderFilter = b.dataset.st; viewOrders().catch(fail);
+      orderFilter = b.dataset.st; reload();
     });
     let t;
     $('#orderSearch').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { orderQuery = e.target.value.trim(); viewOrders().then(() => { const s = $('#orderSearch'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }).catch(fail); }, 400); });
+    $('#fFrom').addEventListener('change', e => { orderFrom = e.target.value; reload(); });
+    $('#fTo').addEventListener('change', e => { orderTo = e.target.value; reload(); });
+    $('#fCustom').addEventListener('change', e => { orderCustom = e.target.checked; reload(); });
+    $('#csvBtn').addEventListener('click', () => downloadCsv(orders));
     $('#main').querySelectorAll('.status-select').forEach(sel => sel.addEventListener('change', async () => {
       const prev = sel.dataset.prev;
       if (sel.value === 'cancelled' && !confirm('Cancel this order? Its items will be added back to stock.')) { sel.value = prev; return; }
-      try { await api('orders/' + sel.dataset.id, { method: 'PUT', body: { status: sel.value } }); toast('Order marked ' + sel.value); viewOrders().catch(fail); }
+      try { await api('orders/' + sel.dataset.id, { method: 'PUT', body: { status: sel.value } }); toast('Order marked ' + stLabel(sel.value)); reload(); pollBadges(); }
       catch (e) { sel.value = prev; fail(e); }
     }));
+    $('#main').querySelectorAll('.note-form').forEach(fm => fm.addEventListener('submit', async e => {
+      e.preventDefault();
+      try { await api('orders/' + fm.dataset.id, { method: 'PUT', body: { admin_note: fm.note.value } }); toast('Note saved'); } catch (err) { fail(err); }
+    }));
+    $('#main').querySelectorAll('[data-print]').forEach(b => b.addEventListener('click', () => printInvoice(orders.find(o => String(o.id) === b.dataset.print))));
+    if (orderQuery && orders.length === 1) $('#main').querySelector('.order').open = true;
+  }
+
+  function itemHtml(l) {
+    if (!l.custom) return `<li><span>${esc(l.name)}, ${esc(l.color)} <span class="muted">${esc(l.code)}</span><br>Size ${esc(l.size)} × ${l.qty}</span><span>${money(l.price * l.qty)}</span></li>`;
+    const d = l.details || {};
+    return `<li class="custom-item"><span><b class="tag">Custom</b> ${esc(l.name)} × ${l.qty}<br>
+      <span class="muted">Fabric:</span> ${esc(d.fabric)}<br>
+      ${(d.options || []).map(o => `<span class="muted">${esc(o.group)}:</span> ${esc(o.choice)}`).join('<br>')}<br>
+      ${d.meas ? `<span class="muted">Fit:</span> ${esc(d.fit)}<table class="meas-t">${Object.entries(d.meas).filter(([, v]) => v).map(([k, v]) => `<tr><td>${MEAS_NAMES[k] || k}</td><td>${esc(v)}${k === 'height' ? '' : '"'}</td></tr>`).join('')}</table>` : `<span class="muted">Size:</span> ${esc(l.size)}`}
+      ${d.note ? `<br><span class="muted">Note:</span> ${esc(d.note)}` : ''}</span><span>${money(l.price * l.qty)}</span></li>`;
   }
 
   function orderCard(o) {
     const phone = o.phone.replace(/^\+?88/, '');
-    const when = new Date(o.created_at.replace(' ', 'T') + 'Z').toLocaleString('en-GB', { timeZone: 'Asia/Dhaka', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    const hasCustom = o.items.some(l => l.custom);
     return `<details class="order st-${o.status}">
       <summary>
-        <div class="o-main"><strong>${esc(o.order_no)}</strong><span class="muted">${when}</span></div>
+        <div class="o-main"><strong>${esc(o.order_no)}${hasCustom ? ' <b class="tag">Custom</b>' : ''}</strong><span class="muted">${fmtWhen(o.created_at)}</span></div>
         <div class="o-cust">${esc(o.name)}<span class="muted">${esc(phone)}</span></div>
         <div class="o-total">${money(o.total)}<span class="muted">${o.payment === 'bkash' ? 'bKash/Nagad' : 'COD'}</span></div>
-        <span class="badge st-${o.status}">${STATUSES.find(s => s[0] === o.status)[1]}</span>
+        <span class="badge st-${o.status}">${stLabel(o.status)}</span>
       </summary>
       <div class="o-body">
         <div class="o-cols">
@@ -112,11 +259,12 @@
             <p>${esc(o.name)}<br><a href="tel:${esc(phone)}">${esc(phone)}</a><br>${esc(o.address)}</p>
             <p class="muted">${o.area === 'outside' ? 'Outside Dhaka' : 'Inside Dhaka'}</p>
             ${o.payment === 'bkash' ? `<p><b>bKash/Nagad TrxID:</b> ${esc(o.trx)}</p>` : ''}
-            ${o.note ? `<p><b>Note:</b> ${esc(o.note)}</p>` : ''}
+            ${o.note ? `<p><b>Customer note:</b> ${esc(o.note)}</p>` : ''}
+            <form class="note-form" data-id="${o.id}"><h4>Private note</h4><textarea name="note" rows="2" placeholder="Courier tracking number, call notes…">${esc(o.admin_note || '')}</textarea><button class="btn ghost sm" type="submit">Save note</button></form>
           </div>
           <div>
             <h4>Items</h4>
-            <ul class="o-items">${o.items.map(l => `<li><span>${esc(l.name)}, ${esc(l.color)} <span class="muted">${esc(l.code)}</span><br>Size ${esc(l.size)} × ${l.qty}</span><span>${money(l.price * l.qty)}</span></li>`).join('')}</ul>
+            <ul class="o-items">${o.items.map(itemHtml).join('')}</ul>
             <p class="o-sum"><span>Subtotal</span><span>${money(o.subtotal)}</span></p>
             <p class="o-sum"><span>Delivery</span><span>${money(o.delivery)}</span></p>
             <p class="o-sum total"><span>Total</span><span>${money(o.total)}</span></p>
@@ -124,11 +272,169 @@
         </div>
         <div class="o-actions">
           <label>Status <select class="status-select" data-id="${o.id}" data-prev="${o.status}">${STATUSES.map(([k, l]) => `<option value="${k}" ${k === o.status ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-          <a class="btn ghost sm" href="https://wa.me/88${esc(phone)}" target="_blank" rel="noopener">WhatsApp customer</a>
+          <a class="btn ghost sm" href="https://wa.me/88${esc(phone)}" target="_blank" rel="noopener">WhatsApp</a>
           <a class="btn ghost sm" href="tel:${esc(phone)}">Call</a>
+          <button class="btn ghost sm" type="button" data-print="${o.id}">Print invoice</button>
         </div>
       </div>
     </details>`;
+  }
+
+  function downloadCsv(orders) {
+    const cell = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const rows = [['Order', 'Date', 'Status', 'Name', 'Phone', 'Address', 'Area', 'Payment', 'TrxID', 'Items', 'Subtotal', 'Delivery', 'Total', 'Customer note', 'Private note']];
+    orders.forEach(o => rows.push([o.order_no, fmtWhen(o.created_at), o.status, o.name, o.phone, o.address, o.area, o.payment, o.trx, o.items.map(l => `${l.name} ${l.color} ${l.size} x${l.qty}`).join('; '), o.subtotal, o.delivery, o.total, o.note, o.admin_note]));
+    const blob = new Blob(['\ufeff' + rows.map(r => r.map(cell).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = `al-hadaf-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  function printInvoice(o) {
+    if (!o) return;
+    const w = window.open('', '_blank');
+    if (!w) return toast('Allow pop-ups to print the invoice.', true);
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Invoice ${esc(o.order_no)}</title><style>
+      body{font-family:system-ui,sans-serif;color:#1A1A1A;max-width:720px;margin:32px auto;padding:0 20px;font-size:14px}
+      header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1A1A1A;padding-bottom:14px}
+      img{height:56px}h1{font-size:22px;margin:0;font-weight:500}table{width:100%;border-collapse:collapse;margin-top:18px}
+      th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #ddd;vertical-align:top}th{font-weight:500;color:#666;font-size:12px}
+      .r{text-align:right}.tot td{font-weight:600;border-top:2px solid #1A1A1A}.muted{color:#666}.cols{display:flex;gap:40px;margin-top:18px}
+      @media print{button{display:none}}</style></head><body>
+      <header><img src="${location.origin}/logo-light.png" alt="Al Hadaf"><div class="r"><h1>Invoice</h1><div>${esc(o.order_no)}</div><div class="muted">${fmtWhen(o.created_at)}</div></div></header>
+      <div class="cols"><div><div class="muted">Deliver to</div><strong>${esc(o.name)}</strong><br>${esc(o.phone)}<br>${esc(o.address)}<br>${o.area === 'outside' ? 'Outside Dhaka' : 'Inside Dhaka'}</div>
+      <div><div class="muted">Payment</div>${o.payment === 'bkash' ? 'bKash/Nagad, TrxID ' + esc(o.trx) : 'Cash on delivery'}</div></div>
+      <table><thead><tr><th>Item</th><th>Size</th><th class="r">Qty</th><th class="r">Price</th><th class="r">Amount</th></tr></thead><tbody>
+      ${o.items.map(l => `<tr><td>${esc(l.name)}<div class="muted">${esc(l.custom ? (l.details.fabric + ', ' + l.details.options.map(x => x.choice).join(', ')) : l.code + ' · ' + l.color)}</div></td><td>${esc(l.size)}</td><td class="r">${l.qty}</td><td class="r">${num(l.price)}</td><td class="r">${num(l.price * l.qty)}</td></tr>`).join('')}
+      <tr><td colspan="4" class="r">Subtotal</td><td class="r">${num(o.subtotal)}</td></tr>
+      <tr><td colspan="4" class="r">Delivery</td><td class="r">${num(o.delivery)}</td></tr>
+      <tr class="tot"><td colspan="4" class="r">Total (BDT)</td><td class="r">${num(o.total)}</td></tr></tbody></table>
+      <p class="muted" style="margin-top:28px">Thank you for shopping with Al Hadaf. Jazakallahu khairan.</p>
+      <button onclick="print()">Print</button><script>setTimeout(()=>print(),400)<\/script></body></html>`);
+    w.document.close();
+  }
+
+  // ================= CHATS =================
+  const QUICK = [
+    'Assalamu alaikum! How can we help you?',
+    'Please share your height and chest size, and we will suggest the right size.',
+    'Your order is confirmed. It will reach you in 1–2 days inside Dhaka, 2–4 days outside.',
+    'Please send your order number so we can check it.',
+    'JazakAllahu khairan for shopping with Al Hadaf!'
+  ];
+  let chatList = [], chatOpen = 0, chatMsgs = [];
+
+  async function viewChats(arg) {
+    chatOpen = Number(arg) || 0;
+    chatList = await api('chats');
+    $('#main').innerHTML = `
+      <div class="page-head"><h1>Chats</h1><span class="muted small">Customers chat from the button on the website. New messages also show in the menu.</span></div>
+      <div class="chat-shell ${chatOpen ? 'has-open' : ''}">
+        <aside class="chat-list" id="chatList"></aside>
+        <section class="chat-view" id="chatView"><div class="chat-empty"><p>Select a chat to read and reply.</p></div></section>
+      </div>`;
+    drawChatList();
+    if (chatOpen) await openAdminChat(chatOpen);
+    const tick = async () => {
+      if (!location.hash.startsWith('#chats')) return;
+      try {
+        if (!document.hidden) {
+          chatList = await api('chats'); drawChatList();
+          if (chatOpen) await refreshChat();
+        }
+      } catch (e) { /* ignore */ }
+      viewTimer = setTimeout(tick, chatOpen ? 4000 : 10000);
+    };
+    viewTimer = setTimeout(tick, 4000);
+  }
+
+  function drawChatList() {
+    const el = $('#chatList'); if (!el) return;
+    el.innerHTML = chatList.length ? chatList.map(c => `<a href="#chats/${c.id}" class="cl-item ${c.id === chatOpen ? 'on' : ''} ${c.admin_unread ? 'unread' : ''} ${c.status === 'closed' ? 'closed' : ''}">
+      <span class="cl-av">${esc((c.name || '?').trim().charAt(0).toUpperCase())}</span>
+      <span class="cl-main"><span class="cl-top"><strong>${esc(c.name)}</strong><time>${ago(c.updated_at)}</time></span><span class="cl-last">${esc(c.last_msg)}</span></span>
+      ${c.admin_unread ? `<b class="nbadge">${c.admin_unread}</b>` : ''}</a>`).join('')
+      : '<p class="empty">No chats yet. When a customer writes from the website, the chat appears here.</p>';
+  }
+
+  async function openAdminChat(id) {
+    const d = await api('chats/' + id);
+    chatMsgs = d.messages;
+    const c = d.chat, phone = (c.phone || '').replace(/^\+?88/, '');
+    $('#chatView').innerHTML = `
+      <div class="cv-head">
+        <a href="#chats" class="cv-back" aria-label="Back to chats">‹</a>
+        <div class="cv-who"><strong>${esc(c.name)}</strong><span class="muted small">${phone ? esc(phone) + ' · ' : ''}started ${fmtWhen(c.created_at)}</span></div>
+        <div class="cv-tools">
+          ${phone ? `<a class="btn ghost sm" href="tel:${esc(phone)}">Call</a><a class="btn ghost sm" href="https://wa.me/88${esc(phone)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
+          <button class="btn ghost sm" id="cvStatus">${c.status === 'closed' ? 'Reopen' : 'Mark done'}</button>
+          <button class="btn ghost sm danger-t" id="cvDel">Delete</button>
+        </div>
+      </div>
+      ${d.orders.length ? `<div class="cv-orders">Orders from this number: ${d.orders.map(o => `<a href="#orders" data-q="${esc(o.order_no)}">${esc(o.order_no)}</a> <span class="badge st-${o.status}">${stLabel(o.status)}</span>`).join(' ')}</div>` : ''}
+      <div class="cv-log" id="cvLog"></div>
+      <div class="quick">${QUICK.map((q, i) => `<button type="button" data-quick="${i}">${esc(q.length > 38 ? q.slice(0, 36) + '…' : q)}</button>`).join('')}</div>
+      <form class="cv-compose" id="cvCompose"><textarea name="body" rows="2" placeholder="Write a reply. Enter sends, Shift+Enter for a new line."></textarea><button class="btn primary" type="submit">Send</button></form>`;
+    drawAdminLog();
+    const form = $('#cvCompose');
+    form.body.focus();
+    form.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const body = form.body.value.trim(); if (!body) return;
+      const btn = form.querySelector('button'); btn.disabled = true;
+      try { await api('chats/' + id, { method: 'POST', body: { body } }); form.body.value = ''; await refreshChat(); chatList = await api('chats'); drawChatList(); }
+      catch (err) { fail(err); }
+      btn.disabled = false; form.body.focus();
+    });
+    $('#chatView').querySelector('.quick').addEventListener('click', e => {
+      const b = e.target.closest('[data-quick]'); if (!b) return;
+      form.body.value = QUICK[+b.dataset.quick]; form.body.focus();
+    });
+    $('#cvStatus').addEventListener('click', async () => {
+      try { await api('chats/' + id, { method: 'PUT', body: { status: c.status === 'closed' ? 'open' : 'closed' } }); toast(c.status === 'closed' ? 'Chat reopened' : 'Chat marked done'); route(); } catch (err) { fail(err); }
+    });
+    $('#cvDel').addEventListener('click', async () => {
+      if (!confirm('Delete this chat and all its messages?')) return;
+      try { await api('chats/' + id, { method: 'DELETE' }); toast('Chat deleted'); location.hash = 'chats'; } catch (err) { fail(err); }
+    });
+    pollBadges();
+  }
+
+  async function refreshChat() {
+    const last = chatMsgs.length ? chatMsgs[chatMsgs.length - 1].id : 0;
+    const d = await api(`chats/${chatOpen}?after=${last}`);
+    if (d.messages.length) { chatMsgs.push(...d.messages); drawAdminLog(); }
+  }
+
+  function drawAdminLog() {
+    const log = $('#cvLog'); if (!log) return;
+    let lastDay = '';
+    log.innerHTML = chatMsgs.map(m => {
+      const day = toDate(m.created_at).toLocaleDateString('en-GB', { timeZone: 'Asia/Dhaka', day: 'numeric', month: 'long' });
+      const sep = day !== lastDay ? `<p class="day">${day}</p>` : ''; lastDay = day;
+      return `${sep}<div class="bubble ${m.sender === 'admin' ? 'me' : 'them'}"><p>${esc(m.body).replace(/\n/g, '<br>')}</p><time>${toDate(m.created_at).toLocaleTimeString('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit' })}</time></div>`;
+    }).join('');
+    log.scrollTop = log.scrollHeight;
+  }
+
+  // ================= CUSTOMERS =================
+  let custQuery = '';
+  async function viewCustomers() {
+    const list = await api('customers' + (custQuery ? '?q=' + encodeURIComponent(custQuery) : ''));
+    $('#main').innerHTML = `
+      <div class="page-head"><h1>Customers <span class="muted">${list.length}</span></h1>
+        <input class="search" id="custSearch" type="search" placeholder="Search name or phone" value="${esc(custQuery)}"></div>
+      <p class="muted small">Everyone who has placed an order, grouped by mobile number. Repeat customers are your best people, call them first with new arrivals.</p>
+      ${list.length ? `<div class="card flush"><table class="tbl">
+        <thead><tr><th>Customer</th><th>Phone</th><th class="r">Orders</th><th class="r">Spent</th><th>Last order</th><th></th></tr></thead>
+        <tbody>${list.map(c => { const ph = c.phone.replace(/^\+?88/, ''); return `<tr>
+          <td><strong>${esc(c.name)}</strong>${c.orders > 1 ? ' <b class="tag">Repeat</b>' : ''}<span class="muted block">${esc(c.address)}</span></td>
+          <td><a href="tel:${esc(ph)}">${esc(ph)}</a></td><td class="r">${c.orders}</td><td class="r">${money(c.spent)}</td><td>${fmtWhen(c.last_order)}</td>
+          <td class="r nowrap"><a class="btn ghost sm" href="#orders" data-q="${esc(c.phone)}">Orders</a> <a class="btn ghost sm" href="https://wa.me/88${esc(ph)}" target="_blank" rel="noopener">WhatsApp</a></td></tr>`; }).join('')}</tbody></table></div>`
+        : '<p class="empty">No customers yet. They appear here after their first order.</p>'}`;
+    let t;
+    $('#custSearch').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { custQuery = e.target.value.trim(); viewCustomers().then(() => { const s = $('#custSearch'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }).catch(fail); }, 400); });
   }
 
   // ================= PRODUCTS =================
@@ -385,6 +691,169 @@
     });
   }
 
+  // ================= TAILORING (নিজের মাপে জুব্বা) =================
+  async function viewCustom() {
+    const [cfg, fabrics] = await Promise.all([api('custom'), api('fabrics')]);
+    let groups = JSON.parse(JSON.stringify(cfg.groups));
+    const minFab = fabrics.filter(f => f.active).reduce((m, f) => Math.min(m, f.price_add), Infinity);
+    $('#main').innerHTML = `
+      <div class="page-head"><div><h1>Tailoring</h1><p class="muted">Customers design a thobe on the website: fabric, style and their own measurements. You set the prices here.</p></div>
+        <a class="btn ghost" href="/#/custom" target="_blank" rel="noopener">See it on the website</a></div>
+      <form id="cfgForm" class="editor">
+        <section class="card">
+          <h2>Price and timing</h2>
+          <div class="g3">
+            <label class="field"><span>Tailoring price (BDT) <small>before fabric and extras</small></span><input name="base_price" type="number" min="0" value="${cfg.base_price}"></label>
+            <label class="field"><span>Ready in (days) <small>shown to customers</small></span><input name="lead_days" type="number" min="1" value="${cfg.lead_days}"></label>
+            <div class="checks"><label class="check"><input type="checkbox" name="enabled" ${cfg.enabled ? 'checked' : ''}> Take custom orders</label>
+              <span class="muted small">Cheapest custom thobe now: ${Number.isFinite(minFab) ? money(cfg.base_price + minFab) : 'add a fabric first'}</span></div>
+          </div>
+          <label class="field"><span>Standard sizes <small>comma separated, for customers who choose a size instead of measurements</small></span><input name="sizes" value="${esc(cfg.sizes.join(', '))}"></label>
+        </section>
+        <section class="card">
+          <h2>Style options</h2>
+          <p class="muted small">Each group is one choice the customer makes. The first option in each group is selected by default. “Extra” is added to the price.</p>
+          <div id="groupsEd"></div>
+          <button type="button" class="btn ghost sm" id="addGroup">Add option group</button>
+        </section>
+        <div class="save-bar"><span class="spacer"></span><button class="btn primary" type="submit">Save tailoring settings</button></div>
+      </form>
+      <section class="card">
+        <div class="card-head"><h2>Fabrics <span class="muted">${fabrics.length}</span></h2><button class="btn primary sm" id="addFabric">Add fabric</button></div>
+        <p class="muted small">Add a close-up photo of each fabric so customers can see the texture. “Extra” is added to the tailoring price.</p>
+        <div class="fab-list" id="fabList">${fabrics.map(fabricRow).join('') || '<p class="muted">No fabrics yet. Customers need at least one fabric to order.</p>'}</div>
+        <div id="fabEditor"></div>
+      </section>`;
+
+    function drawGroups() {
+      $('#groupsEd').innerHTML = groups.map((g, gi) => `<div class="grp">
+        <div class="grp-head">
+          <input data-g="${gi}" data-k="name_en" value="${esc(g.name_en)}" placeholder="Group name (English)" aria-label="Group name English">
+          <input data-g="${gi}" data-k="name_bn" value="${esc(g.name_bn)}" placeholder="গ্রুপের নাম (বাংলা)" aria-label="Group name Bangla">
+          <button type="button" class="icon" data-gmv="${gi}" data-d="-1" ${gi === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
+          <button type="button" class="icon" data-gdel="${gi}" aria-label="Remove group">×</button>
+        </div>
+        <div class="opt-head"><span>Option (English)</span><span>বাংলা</span><span>Extra (BDT)</span><span></span></div>
+        ${g.options.map((o, oi) => `<div class="opt-row">
+          <input data-g="${gi}" data-o="${oi}" data-k="en" value="${esc(o.en)}" aria-label="Option English">
+          <input data-g="${gi}" data-o="${oi}" data-k="bn" value="${esc(o.bn)}" aria-label="Option Bangla">
+          <input data-g="${gi}" data-o="${oi}" data-k="add" type="number" min="0" value="${o.add}" aria-label="Extra price">
+          <button type="button" class="icon" data-odel="${gi}:${oi}" aria-label="Remove option">×</button></div>`).join('')}
+        <button type="button" class="text-btn" data-oadd="${gi}">+ Add option</button>
+      </div>`).join('');
+    }
+    const ed = $('#groupsEd');
+    ed.addEventListener('input', e => {
+      const el = e.target, gi = el.dataset.g; if (gi == null) return;
+      if (el.dataset.o != null) groups[gi].options[el.dataset.o][el.dataset.k] = el.dataset.k === 'add' ? Math.max(0, parseInt(el.value, 10) || 0) : el.value;
+      else groups[gi][el.dataset.k] = el.value;
+    });
+    ed.addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.gdel != null && confirm('Remove this option group?')) groups.splice(+b.dataset.gdel, 1);
+      if (b.dataset.gmv != null) { const i = +b.dataset.gmv; [groups[i - 1], groups[i]] = [groups[i], groups[i - 1]]; }
+      if (b.dataset.odel) { const [g, o] = b.dataset.odel.split(':').map(Number); groups[g].options.splice(o, 1); }
+      if (b.dataset.oadd != null) groups[+b.dataset.oadd].options.push({ en: '', bn: '', add: 0 });
+      drawGroups();
+    });
+    $('#addGroup').addEventListener('click', () => { groups.push({ key: 'opt' + Date.now().toString(36), name_en: '', name_bn: '', options: [{ en: '', bn: '', add: 0 }] }); drawGroups(); });
+    drawGroups();
+
+    $('#cfgForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = e.target;
+      const body = { enabled: f.enabled.checked, base_price: f.base_price.value, lead_days: f.lead_days.value, sizes: f.sizes.value.split(','), groups };
+      try { await api('custom', { method: 'PUT', body }); toast('Tailoring settings saved'); viewCustom().catch(fail); } catch (err) { fail(err); }
+    });
+
+    const openFabric = f => {
+      let image = f.image || '';
+      $('#fabEditor').innerHTML = `<form class="fab-form" id="fabForm">
+        <h3 class="sub">${f.id ? 'Edit fabric' : 'New fabric'}</h3>
+        <div class="fab-grid">
+          <div><div class="fab-img" id="fabImg" style="--c:${esc(f.color_hex || '#F2F0EA')}">${image ? `<img src="/img/${esc(image)}" alt="">` : ''}</div>
+            <label class="upload"><input type="file" id="fabUp" accept="image/*" hidden><span>${image ? 'Change photo' : 'Add photo'}</span></label>
+            ${image ? '<button type="button" class="text-btn" id="fabRm">Remove photo</button>' : ''}</div>
+          <div>
+            <div class="g2"><label class="field"><span>Name (English)</span><input name="name_en" value="${esc(f.name_en || '')}" required></label>
+              <label class="field"><span>নাম (বাংলা)</span><input name="name_bn" value="${esc(f.name_bn || '')}"></label></div>
+            <div class="g2"><label class="field"><span>Short description (English)</span><textarea name="desc_en" rows="2">${esc(f.desc_en || '')}</textarea></label>
+              <label class="field"><span>বর্ণনা (বাংলা)</span><textarea name="desc_bn" rows="2">${esc(f.desc_bn || '')}</textarea></label></div>
+            <div class="g3"><label class="field"><span>Extra price (BDT)</span><input name="price_add" type="number" min="0" value="${f.price_add || 0}"></label>
+              <label class="field"><span>GSM <small>optional</small></span><input name="gsm" type="number" min="0" value="${f.gsm == null ? '' : f.gsm}"></label>
+              <label class="field"><span>Colour</span><input name="color_hex" type="color" value="${esc(f.color_hex || '#F2F0EA')}"></label></div>
+            <div class="g3"><label class="field"><span>Display order</span><input name="sort" type="number" value="${f.sort || 0}"></label>
+              <div class="checks"><label class="check"><input type="checkbox" name="active" ${f.active === 0 ? '' : 'checked'}> Show to customers</label></div></div>
+            <div class="row-btns">${f.id ? '<button type="button" class="btn danger sm" id="fabDel">Delete fabric</button>' : ''}<span class="spacer"></span>
+              <button type="button" class="btn ghost sm" id="fabCancel">Cancel</button><button class="btn primary sm" type="submit">${f.id ? 'Save fabric' : 'Add fabric'}</button></div>
+          </div>
+        </div></form>`;
+      const form = $('#fabForm');
+      form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const drawImg = () => { $('#fabImg').innerHTML = image ? `<img src="/img/${esc(image)}" alt="">` : ''; };
+      $('#fabUp').addEventListener('change', async e => {
+        const file = e.target.files[0]; if (!file) return;
+        try { toast('Uploading photo…'); image = await uploadFile(file); drawImg(); toast('Photo added. Save the fabric to keep it.'); } catch (err) { fail(err); }
+      });
+      const rm = $('#fabRm'); if (rm) rm.addEventListener('click', () => { image = ''; drawImg(); });
+      $('#fabCancel').addEventListener('click', () => { $('#fabEditor').innerHTML = ''; });
+      form.addEventListener('submit', async e => {
+        e.preventDefault();
+        const body = { ...Object.fromEntries(new FormData(form)), active: form.active.checked, image };
+        try { await api('fabrics' + (f.id ? '/' + f.id : ''), { method: f.id ? 'PUT' : 'POST', body }); toast('Fabric saved'); viewCustom().catch(fail); } catch (err) { fail(err); }
+      });
+      const del = $('#fabDel');
+      if (del) del.addEventListener('click', async () => {
+        if (!confirm(`Delete “${f.name_en}”? Past orders keep their fabric name.`)) return;
+        try { await api('fabrics/' + f.id, { method: 'DELETE' }); toast('Fabric deleted'); viewCustom().catch(fail); } catch (err) { fail(err); }
+      });
+    };
+    $('#addFabric').addEventListener('click', () => openFabric({}));
+    $('#fabList').addEventListener('click', e => { const r = e.target.closest('[data-fab]'); if (r) openFabric(fabrics.find(f => f.id === +r.dataset.fab)); });
+  }
+  const fabricRow = f => `<button type="button" class="fab-row ${f.active ? '' : 'inactive'}" data-fab="${f.id}">
+    <span class="pthumb" style="--c:${esc(f.color_hex)}">${f.image ? `<img src="/img/${esc(f.image)}" alt="" loading="lazy">` : ''}</span>
+    <span class="pinfo"><strong>${esc(f.name_en)}</strong><span class="muted">${esc(f.name_bn)}${f.gsm ? ' · GSM ' + f.gsm : ''}</span></span>
+    <span>${f.price_add ? '+' + money(f.price_add) : 'No extra'}</span>
+    <span>${f.active ? '<span class="badge st-delivered">Live</span>' : '<span class="badge">Hidden</span>'}</span></button>`;
+
+  // ================= GALLERY =================
+  async function viewGallery() {
+    const list = await api('gallery');
+    $('#main').innerHTML = `
+      <div class="page-head"><div><h1>Gallery <span class="muted">${list.length}</span></h1><p class="muted">Customer photos, Eid looks, the workshop. They show on the home page and on the Gallery page.</p></div>
+        <label class="upload"><input type="file" id="galUp" accept="image/*" multiple hidden><span class="btn primary">Upload photos</span></label></div>
+      <p class="muted small" id="galStatus"></p>
+      ${list.length ? `<div class="gal-grid">${list.map(g => `<form class="gal-card" data-id="${g.id}">
+        <div class="gal-img"><img src="/img/${esc(g.image)}" alt="" loading="lazy"></div>
+        <input name="caption_en" value="${esc(g.caption_en)}" placeholder="Caption (English)" aria-label="Caption English">
+        <input name="caption_bn" value="${esc(g.caption_bn)}" placeholder="ক্যাপশন (বাংলা)" aria-label="Caption Bangla">
+        <div class="gal-row"><input name="product_code" value="${esc(g.product_code)}" placeholder="Product code" aria-label="Link to product code" list="codes">
+          <input name="sort" type="number" value="${g.sort}" aria-label="Order" title="Display order, lower shows first" class="num"></div>
+        <div class="gal-row"><button class="btn ghost sm danger-t" type="button" data-del>Delete</button><button class="btn primary sm" type="submit">Save</button></div>
+      </form>`).join('')}</div>` : '<p class="empty">No photos yet. Upload a few to start the gallery. Customers wearing your thobes work best.</p>'}
+      <datalist id="codes"></datalist>`;
+    api('products').then(ps => { $('#codes').innerHTML = ps.map(p => `<option value="${esc(p.code)}">${esc(p.name_en)}</option>`).join(''); }).catch(() => {});
+    $('#galUp').addEventListener('change', async e => {
+      const files = [...e.target.files]; e.target.value = '';
+      for (let i = 0; i < files.length; i++) {
+        $('#galStatus').textContent = `Uploading photo ${i + 1} of ${files.length}…`;
+        try { const key = await uploadFile(files[i]); await api('gallery', { method: 'POST', body: { image: key, sort: 0 } }); } catch (err) { fail(err); }
+      }
+      toast(files.length > 1 ? 'Photos added' : 'Photo added'); viewGallery().catch(fail);
+    });
+    $('#main').querySelectorAll('.gal-card').forEach(fm => {
+      fm.addEventListener('submit', async e => {
+        e.preventDefault();
+        try { await api('gallery/' + fm.dataset.id, { method: 'PUT', body: Object.fromEntries(new FormData(fm)) }); toast('Photo saved'); } catch (err) { fail(err); }
+      });
+      fm.querySelector('[data-del]').addEventListener('click', async () => {
+        if (!confirm('Delete this photo from the gallery?')) return;
+        try { await api('gallery/' + fm.dataset.id, { method: 'DELETE' }); toast('Photo deleted'); viewGallery().catch(fail); } catch (err) { fail(err); }
+      });
+    });
+  }
+
   // ================= SHOP INFO =================
   async function viewSettings() {
     const s = await api('settings');
@@ -398,9 +867,17 @@
             ${f('phone', 'Phone number', { ph: '01712345678' })}
             ${f('whatsapp', 'WhatsApp number', { hint: 'with 88, no +', ph: '8801712345678' })}
             ${f('bkash', 'bKash / Nagad number', { hint: 'for Send Money', ph: '01712345678' })}
-            ${f('email', 'Email', { type: 'email', hint: 'optional' })}
-            ${f('facebook', 'Facebook page link', { ph: 'https://facebook.com/yourpage' })}
-            ${f('instagram', 'Instagram link', { hint: 'optional', ph: 'https://instagram.com/yourpage' })}
+            ${f('email', 'Email', { type: 'email', hint: 'optional', ph: 'info@alhadaf.com' })}
+          </div>
+        </section>
+        <section class="card"><h2>Social media</h2>
+          <p class="muted small">Paste the full link. Each one shows as an icon in the footer, menu and contact page. Leave empty to hide.</p>
+          <div class="g2">
+            ${f('facebook', 'Facebook page', { ph: 'https://facebook.com/alhadaf' })}
+            ${f('messenger', 'Messenger', { hint: 'm.me link', ph: 'https://m.me/alhadaf' })}
+            ${f('instagram', 'Instagram', { ph: 'https://instagram.com/alhadaf' })}
+            ${f('youtube', 'YouTube', { ph: 'https://youtube.com/@alhadaf' })}
+            ${f('tiktok', 'TikTok', { ph: 'https://tiktok.com/@alhadaf' })}
           </div>
         </section>
         <section class="card"><h2>Address</h2>
@@ -412,6 +889,9 @@
         <section class="card"><h2>Announcement bar</h2>
           <p class="muted small">The short line at the very top of the website, for offers or delivery news.</p>
           <div class="g2">${f('announce_en', 'English', { area: true })}${f('announce_bn', 'বাংলা', { area: true })}</div>
+        </section>
+        <section class="card"><h2>Phone notifications</h2>
+          <p class="muted small">Get a Telegram message on your phone for every new order and chat. Create a bot with @BotFather, then add two secrets in Cloudflare (Worker › Settings › Variables and Secrets): <b>TELEGRAM_BOT_TOKEN</b> and <b>TELEGRAM_CHAT_ID</b>. Full steps are in the README.</p>
         </section>
         <div class="save-bar"><span class="spacer"></span><button class="btn primary" type="submit">Save shop info</button></div>
       </form>`;

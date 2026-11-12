@@ -242,3 +242,65 @@ Object.assign(STR.bn, {
   statuses: { new: 'পেয়েছি', confirmed: 'কনফার্মড', shipped: 'পথে আছে', delivered: 'ডেলিভারি হয়েছে', cancelled: 'বাতিল' },
   trackLater: '“অর্ডার ট্র্যাক” থেকে যেকোনো সময় অর্ডারের অবস্থা দেখতে পারবেন।'
 });
+
+// ===== v5: রিভিউ, কুপন, অ্যানিমেটেড গ্যালারি =====
+Object.assign(STR.en, {
+  reviews: 'Customer reviews', reviewsCount: n => `${n} review${n === 1 ? '' : 's'}`, noReviews: 'No reviews yet. Bought this thobe? Be the first to review it.',
+  writeReview: 'Write a review', yourRating: 'Your rating', reviewName: 'Your name', reviewPhone: 'Mobile number you ordered with (optional)',
+  reviewPhoneNote: 'We use it only to mark you as a verified buyer. It is never shown.',
+  reviewBody: 'Your review', reviewBodyPh: 'How is the fabric, the fit, the delivery?', reviewSend: 'Send review',
+  reviewThanks: 'Thank you! Your review will appear after we check it.', reviewErr: 'Choose a star rating and write your name.',
+  verified: 'Verified buyer', stars: n => `${n} out of 5 stars`,
+  coupon: 'Coupon code', couponPh: 'Enter code', couponApply: 'Apply', couponRemove: 'Remove',
+  couponOk: c => `Coupon ${c} applied`, discount: 'Discount', freeShip: 'Free delivery',
+  galleryAll: 'All', galleryOurs: 'Our photos', galleryHomeTitle: 'From our collection'
+});
+Object.assign(STR.bn, {
+  reviews: 'কাস্টমার রিভিউ', reviewsCount: n => `${n}টি রিভিউ`, noReviews: 'এখনো কোনো রিভিউ নেই। জুব্বাটি কিনে থাকলে প্রথম রিভিউটি আপনিই দিন।',
+  writeReview: 'রিভিউ লিখুন', yourRating: 'আপনার রেটিং', reviewName: 'আপনার নাম', reviewPhone: 'যে নম্বরে অর্ডার করেছিলেন (ঐচ্ছিক)',
+  reviewPhoneNote: 'শুধু "ভেরিফায়েড ক্রেতা" চিহ্ন দেওয়ার জন্য। নম্বরটি কাউকে দেখানো হয় না।',
+  reviewBody: 'আপনার রিভিউ', reviewBodyPh: 'কাপড়, ফিটিং, ডেলিভারি কেমন লাগল?', reviewSend: 'রিভিউ পাঠান',
+  reviewThanks: 'ধন্যবাদ! যাচাই করার পর আপনার রিভিউ দেখানো হবে।', reviewErr: 'স্টার রেটিং দিন আর আপনার নাম লিখুন।',
+  verified: 'ভেরিফায়েড ক্রেতা', stars: n => `৫-এর মধ্যে ${n} স্টার`,
+  coupon: 'কুপন কোড', couponPh: 'কোড লিখুন', couponApply: 'প্রয়োগ করুন', couponRemove: 'বাদ দিন',
+  couponOk: c => `কুপন ${c} যোগ হয়েছে`, discount: 'ছাড়', freeShip: 'ফ্রি ডেলিভারি',
+  galleryAll: 'সব', galleryOurs: 'আমাদের ছবি', galleryHomeTitle: 'আমাদের কালেকশন থেকে'
+});
+
+// ===== v6: সার্চ, উইশলিস্ট, অ্যাকাউন্ট, bKash, বান্ডেল অফার =====
+Object.assign(STR.en, {
+  search: 'Search', searchPh: 'Search thobes, colours, fabrics…', searchNone: q => `Nothing found for “${q}”. Try another word, like a colour or style.`,
+  searchHint: 'Try “white”, “Saudi” or a product code',
+  wishlist: 'Wishlist', wishAdd: 'Save to wishlist', wishRemove: 'Remove from wishlist', wishSaved: 'Saved to your wishlist', wishEmpty: 'Nothing saved yet. Tap the heart on a thobe to keep it here.',
+  recent: 'Recently viewed',
+  bundleNote: (n, p) => `Buy ${n} or more pieces and save ${p}%`, bundleOff: p => `Bundle offer (${p}%)`, bundleMore: (k, p) => `Add ${k} more to save ${p}%`,
+  notifyTitle: s => `Size ${s} is sold out`, notifyText: 'Leave your mobile number and we will send an SMS when it is back.',
+  notifyBtn: 'Notify me', notifyDone: 'Done! We will send you an SMS when this size is back.',
+  account: 'My account', login: 'Log in', loginIntro: 'Log in with your mobile number to see your orders and fill checkout faster. We send a 6-digit code by SMS.',
+  sendCode: 'Send code', codeLabel: 'Code from SMS', codeSent: p => `We sent a code to ${p}.`, verify: 'Log in', changeNumber: 'Use another number',
+  logout: 'Log out', myOrders: 'My orders', noOrders: 'You have no orders yet.', myDetails: 'My delivery details', saveDetails: 'Save details', detailsSaved: 'Details saved',
+  reorder: 'Order again', loginOff: 'Login is not available right now. You can still order and track your order with its number.',
+  payOnline: 'bKash (pay now)', payOnlineNote: 'Pay instantly on the bKash page, no Transaction ID needed',
+  payGoing: 'Opening bKash…', payNow: 'Pay with bKash', payRetry: 'Try bKash payment again',
+  paySuccess: 'Payment received. Jazakallahu khairan!', payFailed: 'The payment did not go through. No money was taken. You can try again or pay cash on delivery.',
+  payCancelled: 'You cancelled the payment. Your order is saved, you can pay now or on delivery.', paid: 'Paid',
+  share: 'Share', copyLink: 'Copy link', linkCopied: 'Link copied'
+});
+Object.assign(STR.bn, {
+  search: 'খুঁজুন', searchPh: 'জুব্বা, রং, কাপড় খুঁজুন…', searchNone: q => `“${q}” দিয়ে কিছু পাওয়া যায়নি। রং বা স্টাইলের নাম দিয়ে খুঁজুন।`,
+  searchHint: '“সাদা”, “সৌদি” বা প্রোডাক্ট কোড লিখে দেখুন',
+  wishlist: 'পছন্দের তালিকা', wishAdd: 'পছন্দের তালিকায় রাখুন', wishRemove: 'তালিকা থেকে সরান', wishSaved: 'পছন্দের তালিকায় রাখা হয়েছে', wishEmpty: 'এখনো কিছু রাখেননি। জুব্বার উপর হার্টে চাপ দিলে এখানে থাকবে।',
+  recent: 'সম্প্রতি দেখেছেন',
+  bundleNote: (n, p) => `${n} বা তার বেশি পিস নিলে ${p}% ছাড়`, bundleOff: p => `বান্ডেল অফার (${p}%)`, bundleMore: (k, p) => `আর ${k}টি নিলে ${p}% ছাড়`,
+  notifyTitle: s => `সাইজ ${s} স্টকে নেই`, notifyText: 'মোবাইল নম্বর দিন, স্টকে এলে SMS-এ জানাব।',
+  notifyBtn: 'জানাবেন', notifyDone: 'ঠিক আছে! এই সাইজ এলে SMS পাঠাব।',
+  account: 'আমার অ্যাকাউন্ট', login: 'লগইন', loginIntro: 'মোবাইল নম্বর দিয়ে লগইন করে আপনার অর্ডার দেখুন আর দ্রুত অর্ডার করুন। SMS-এ ৬ সংখ্যার কোড পাঠাব।',
+  sendCode: 'কোড পাঠান', codeLabel: 'SMS-এর কোড', codeSent: p => `${p} নম্বরে কোড পাঠানো হয়েছে।`, verify: 'লগইন', changeNumber: 'অন্য নম্বর দিন',
+  logout: 'লগআউট', myOrders: 'আমার অর্ডার', noOrders: 'এখনো কোনো অর্ডার নেই।', myDetails: 'ডেলিভারির তথ্য', saveDetails: 'সেভ করুন', detailsSaved: 'তথ্য সেভ হয়েছে',
+  reorder: 'আবার অর্ডার করুন', loginOff: 'এই মুহূর্তে লগইন বন্ধ আছে। অর্ডার নম্বর দিয়ে অর্ডার ট্র্যাক করতে পারবেন।',
+  payOnline: 'bKash (এখনই পেমেন্ট)', payOnlineNote: 'bKash পেজে সরাসরি পেমেন্ট, Transaction ID লাগবে না',
+  payGoing: 'bKash খুলছে…', payNow: 'bKash-এ পেমেন্ট করুন', payRetry: 'আবার bKash-এ চেষ্টা করুন',
+  paySuccess: 'পেমেন্ট পেয়েছি। জাযাকাল্লাহু খাইরান!', payFailed: 'পেমেন্ট হয়নি, কোনো টাকা কাটা হয়নি। আবার চেষ্টা করুন বা ক্যাশ অন ডেলিভারিতে দিন।',
+  payCancelled: 'আপনি পেমেন্ট বাতিল করেছেন। অর্ডার সেভ আছে, এখন বা ডেলিভারির সময় টাকা দিতে পারবেন।', paid: 'পেমেন্ট হয়েছে',
+  share: 'শেয়ার', copyLink: 'লিংক কপি', linkCopied: 'লিংক কপি হয়েছে'
+});

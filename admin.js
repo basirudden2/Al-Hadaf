@@ -25,6 +25,7 @@
 
   let categories = [], products = [], orderFilter = '', orderQuery = '', orderFrom = '', orderTo = '', orderCustom = false, lastOrders = [];
   let viewTimer = null;
+  let integ = { steadfast: false, sms: false, bkash: false, bdcourier: false };
 
   // ---------- API ----------
   async function api(path, opts = {}) {
@@ -49,8 +50,8 @@
   }
   const fail = e => { if (e.message !== 'auth') toast(e.message, true); };
 
-  async function uploadFile(file) {
-    const blob = await compress(file);
+  async function uploadFile(file, max) {
+    const blob = await compress(file, max);
     return (await api('upload', { method: 'POST', body: blob, headers: { 'content-type': blob.type } })).key;
   }
 
@@ -85,8 +86,9 @@
     try {
       const b = await api('badges');
       const set = (id, n) => { const el = $(id); el.textContent = n; el.hidden = !n; };
-      set('#bOrders', b.newOrders); set('#bChats', b.unreadChats);
-      $('#bAny').hidden = !(b.newOrders || b.unreadChats);
+      set('#bOrders', b.newOrders); set('#bChats', b.unreadChats); set('#bReviews', b.pendingReviews); set('#bAbandoned', b.abandoned);
+      integ = { steadfast: b.steadfast, sms: b.sms, bkash: b.bkash, bdcourier: b.bdcourier };
+      $('#bAny').hidden = !(b.newOrders || b.unreadChats || b.pendingReviews || b.abandoned);
       const total = b.newOrders + b.unreadChats;
       document.title = (total ? `(${total}) ` : '') + 'Admin | Al Hadaf';
       if (lastUnread >= 0 && b.unreadChats > lastUnread) toast('New chat message');
@@ -107,7 +109,8 @@
     const views = {
       dashboard: viewDashboard, orders: viewOrders, chats: () => viewChats(arg), customers: viewCustomers,
       products: viewProducts, product: () => viewProductEdit(arg), custom: viewCustom, gallery: viewGallery,
-      categories: viewCategories, settings: viewSettings
+      categories: viewCategories, settings: viewSettings, coupons: viewCoupons, reviews: viewReviews,
+      abandoned: viewAbandoned, banners: viewBanners
     };
     (views[tab] || viewDashboard)().catch(fail);
   }
@@ -121,7 +124,7 @@
 
   // ================= DASHBOARD =================
   async function viewDashboard() {
-    const d = await api('stats');
+    const [d, bd] = await Promise.all([api('stats'), api('badges')]);
     const aov = d.month.n ? Math.round(d.month.rev / d.month.n) : 0;
     const diff = d.yesterday.rev ? Math.round((d.today.rev - d.yesterday.rev) / d.yesterday.rev * 100) : null;
     const hour = Number(new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', hour12: false }));
@@ -132,6 +135,8 @@
       d.unreadChats ? `<a class="todo" href="#chats"><b>${d.unreadChats}</b> chat${d.unreadChats > 1 ? 's' : ''} waiting for a reply</a>` : '',
       d.statuses.confirmed ? `<a class="todo" href="#orders" data-st="confirmed"><b>${d.statuses.confirmed}</b> confirmed order${d.statuses.confirmed > 1 ? 's' : ''} to ship</a>` : '',
       d.customOpen ? `<a class="todo" href="#orders" data-custom><b>${d.customOpen}</b> custom thobe${d.customOpen > 1 ? 's' : ''} to tailor</a>` : '',
+      bd.abandoned ? `<a class="todo" href="#abandoned"><b>${bd.abandoned}</b> unfinished order${bd.abandoned > 1 ? 's' : ''} to call</a>` : '',
+      bd.pendingReviews ? `<a class="todo" href="#reviews"><b>${bd.pendingReviews}</b> review${bd.pendingReviews > 1 ? 's' : ''} to approve</a>` : '',
       d.lowStock.length ? `<a class="todo" href="#products"><b>${d.lowStock.length}</b> size${d.lowStock.length > 1 ? 's' : ''} low on stock</a>` : ''
     ].filter(Boolean);
     const statusTotal = STATUSES.reduce((s, [k]) => s + (d.statuses[k] || 0), 0);
@@ -229,7 +234,46 @@
       try { await api('orders/' + fm.dataset.id, { method: 'PUT', body: { admin_note: fm.note.value } }); toast('Note saved'); } catch (err) { fail(err); }
     }));
     $('#main').querySelectorAll('[data-print]').forEach(b => b.addEventListener('click', () => printInvoice(orders.find(o => String(o.id) === b.dataset.print))));
+    $('#main').querySelectorAll('[data-fraud] button').forEach(b => b.addEventListener('click', () => runFraud(b.parentElement)));
+    $('#main').querySelectorAll('[data-odel]').forEach(b => b.addEventListener('click', async () => {
+      const o = orders.find(x => String(x.id) === b.dataset.odel);
+      const back = o.status === 'new' || o.status === 'confirmed';
+      if (!confirm(`Delete order ${o.order_no} for good?${back ? ' Its items will go back into stock.' : ''} This cannot be undone.`)) return;
+      try { await api('orders/' + o.id, { method: 'DELETE' }); toast('Order deleted'); reload(); pollBadges(); } catch (e) { fail(e); }
+    }));
+    $('#main').querySelectorAll('[data-courier]').forEach(b => b.addEventListener('click', async () => {
+      const o = orders.find(x => String(x.id) === b.dataset.courier);
+      if (!integ.steadfast) return toast('Steadfast is not set up yet. See Shop info › Courier.', true);
+      if (!confirm(`Book ${o.order_no} with Steadfast? COD amount: ${o.payment === 'bkash' ? 'BDT 0 (paid by bKash)' : money(o.total)}. The order will be marked Shipped.`)) return;
+      b.disabled = true;
+      try { const r = await api('courier/' + o.id, { method: 'POST' }); toast('Booked with Steadfast. Tracking ' + (r.tracking || r.consignment)); reload(); pollBadges(); } catch (e) { fail(e); b.disabled = false; }
+    }));
+    $('#main').querySelectorAll('[data-cstatus]').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { const r = await api('courier/' + b.dataset.cstatus); toast('Courier status: ' + (r.status || 'unknown').replace(/_/g, ' ')); reload(); } catch (e) { fail(e); b.disabled = false; }
+    }));
     if (orderQuery && orders.length === 1) $('#main').querySelector('.order').open = true;
+  }
+
+  // আগের অর্ডারের রেকর্ড: বেশি বাতিল হলে লাল সতর্কতা
+  function histChip(h) {
+    if (!h || h.orders <= 1) return '<b class="hchip new">New customer</b>';
+    const risky = h.cancelled >= 2 && h.cancelled >= h.delivered;
+    return `<b class="hchip ${risky ? 'risk' : 'ok'}" title="${h.orders} orders, ${h.delivered} delivered, ${h.cancelled} cancelled">${h.delivered} delivered · ${h.cancelled} cancelled</b>`;
+  }
+  async function runFraud(box) {
+    box.innerHTML = '<span class="muted small">Checking…</span>';
+    try {
+      const d = await api('fraud?phone=' + encodeURIComponent(box.dataset.fraud));
+      const own = d.own, c = d.courier;
+      const ratio = c && !c.error && c.total ? Math.round(c.success / c.total * 100) : null;
+      box.innerHTML = `<div class="fraud-box ${ratio != null && ratio < 60 ? 'risk' : ''}">
+        <p><b>With Al Hadaf:</b> ${own.orders} orders, ${own.delivered} delivered, ${own.cancelled} cancelled</p>
+        ${c ? (c.error ? `<p class="muted small">All couriers: ${esc(c.error)}</p>` : `<p><b>All couriers:</b> ${c.total} parcels, ${c.success} delivered, ${c.cancelled} returned${ratio != null ? ` · <b>${ratio}% success</b>` : ''}</p>
+          ${c.couriers.length ? `<p class="muted small">${c.couriers.map(x => `${esc(x.name)} ${x.success}/${x.total}`).join(' · ')}</p>` : ''}
+          ${ratio != null && ratio < 60 ? '<p class="warn-t">Low success rate. Call and confirm before sending, or ask for advance delivery charge.</p>' : ''}`)
+        : `<p class="muted small">Add BDCOURIER_API_KEY in Cloudflare to also see this number’s record with Steadfast, Pathao, RedX and others.</p>`}</div>`;
+    } catch (e) { box.innerHTML = ''; fail(e); }
   }
 
   function itemHtml(l) {
@@ -248,8 +292,8 @@
     return `<details class="order st-${o.status}">
       <summary>
         <div class="o-main"><strong>${esc(o.order_no)}${hasCustom ? ' <b class="tag">Custom</b>' : ''}</strong><span class="muted">${fmtWhen(o.created_at)}</span></div>
-        <div class="o-cust">${esc(o.name)}<span class="muted">${esc(phone)}</span></div>
-        <div class="o-total">${money(o.total)}<span class="muted">${o.payment === 'bkash' ? 'bKash/Nagad' : 'COD'}</span></div>
+        <div class="o-cust">${esc(o.name)}<span class="muted">${esc(phone)} ${histChip(o.history)}</span></div>
+        <div class="o-total">${money(o.total)}<span class="muted">${o.payment === 'bkash_online' ? (o.paid ? '<b class="paid">bKash paid</b>' : 'bKash, not paid yet') : o.payment === 'bkash' ? 'bKash/Nagad' : 'COD'}</span></div>
         <span class="badge st-${o.status}">${stLabel(o.status)}</span>
       </summary>
       <div class="o-body">
@@ -258,8 +302,10 @@
             <h4>Customer</h4>
             <p>${esc(o.name)}<br><a href="tel:${esc(phone)}">${esc(phone)}</a><br>${esc(o.address)}</p>
             <p class="muted">${o.area === 'outside' ? 'Outside Dhaka' : 'Inside Dhaka'}</p>
-            ${o.payment === 'bkash' ? `<p><b>bKash/Nagad TrxID:</b> ${esc(o.trx)}</p>` : ''}
+            ${o.payment === 'bkash' || (o.payment === 'bkash_online' && o.paid) ? `<p><b>bKash${o.payment === 'bkash_online' ? ' (online)' : '/Nagad'} TrxID:</b> ${esc(o.trx)}</p>` : ''}
+            <div class="fraud" data-fraud="${esc(phone)}"><button class="btn ghost sm" type="button">Check customer record</button></div>
             ${o.note ? `<p><b>Customer note:</b> ${esc(o.note)}</p>` : ''}
+            ${o.consignment ? `<p class="courier-line"><b>Steadfast</b> #${esc(o.consignment)}${o.tracking_code ? ` · <a href="https://steadfast.com.bd/t/${esc(o.tracking_code)}" target="_blank" rel="noopener">${esc(o.tracking_code)}</a>` : ''}${o.courier_status ? ` · <span class="badge">${esc(o.courier_status.replace(/_/g, ' '))}</span>` : ''}</p>` : ''}
             <form class="note-form" data-id="${o.id}"><h4>Private note</h4><textarea name="note" rows="2" placeholder="Courier tracking number, call notes…">${esc(o.admin_note || '')}</textarea><button class="btn ghost sm" type="submit">Save note</button></form>
           </div>
           <div>
@@ -267,6 +313,8 @@
             <ul class="o-items">${o.items.map(itemHtml).join('')}</ul>
             <p class="o-sum"><span>Subtotal</span><span>${money(o.subtotal)}</span></p>
             <p class="o-sum"><span>Delivery</span><span>${money(o.delivery)}</span></p>
+            ${o.bundle_off ? `<p class="o-sum disc"><span>Bundle offer</span><span>−${money(o.bundle_off)}</span></p>` : ''}
+            ${o.discount ? `<p class="o-sum disc"><span>Coupon ${esc(o.coupon)}</span><span>−${money(o.discount)}</span></p>` : ''}
             <p class="o-sum total"><span>Total</span><span>${money(o.total)}</span></p>
           </div>
         </div>
@@ -275,6 +323,10 @@
           <a class="btn ghost sm" href="https://wa.me/88${esc(phone)}" target="_blank" rel="noopener">WhatsApp</a>
           <a class="btn ghost sm" href="tel:${esc(phone)}">Call</a>
           <button class="btn ghost sm" type="button" data-print="${o.id}">Print invoice</button>
+          ${o.consignment ? `<button class="btn ghost sm" type="button" data-cstatus="${o.id}">Check courier status</button>`
+            : o.status !== 'cancelled' && o.status !== 'delivered' ? `<button class="btn ghost sm" type="button" data-courier="${o.id}">Send to Steadfast</button>` : ''}
+          <span class="spacer"></span>
+          <button class="btn ghost sm danger-t" type="button" data-odel="${o.id}">Delete order</button>
         </div>
       </div>
     </details>`;
@@ -282,8 +334,8 @@
 
   function downloadCsv(orders) {
     const cell = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
-    const rows = [['Order', 'Date', 'Status', 'Name', 'Phone', 'Address', 'Area', 'Payment', 'TrxID', 'Items', 'Subtotal', 'Delivery', 'Total', 'Customer note', 'Private note']];
-    orders.forEach(o => rows.push([o.order_no, fmtWhen(o.created_at), o.status, o.name, o.phone, o.address, o.area, o.payment, o.trx, o.items.map(l => `${l.name} ${l.color} ${l.size} x${l.qty}`).join('; '), o.subtotal, o.delivery, o.total, o.note, o.admin_note]));
+    const rows = [['Order', 'Date', 'Status', 'Name', 'Phone', 'Address', 'Area', 'Payment', 'TrxID', 'Items', 'Subtotal', 'Delivery', 'Discount', 'Coupon', 'Total', 'Customer note', 'Private note']];
+    orders.forEach(o => rows.push([o.order_no, fmtWhen(o.created_at), o.status, o.name, o.phone, o.address, o.area, o.payment, o.trx, o.items.map(l => `${l.name} ${l.color} ${l.size} x${l.qty}`).join('; '), o.subtotal, o.delivery, o.discount || 0, o.coupon || '', o.total, o.note, o.admin_note]));
     const blob = new Blob(['\ufeff' + rows.map(r => r.map(cell).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = `al-hadaf-orders-${new Date().toISOString().slice(0, 10)}.csv`;
@@ -308,6 +360,7 @@
       ${o.items.map(l => `<tr><td>${esc(l.name)}<div class="muted">${esc(l.custom ? (l.details.fabric + ', ' + l.details.options.map(x => x.choice).join(', ')) : l.code + ' · ' + l.color)}</div></td><td>${esc(l.size)}</td><td class="r">${l.qty}</td><td class="r">${num(l.price)}</td><td class="r">${num(l.price * l.qty)}</td></tr>`).join('')}
       <tr><td colspan="4" class="r">Subtotal</td><td class="r">${num(o.subtotal)}</td></tr>
       <tr><td colspan="4" class="r">Delivery</td><td class="r">${num(o.delivery)}</td></tr>
+      ${o.discount ? `<tr><td colspan="4" class="r">Discount (${esc(o.coupon)})</td><td class="r">−${num(o.discount)}</td></tr>` : ''}
       <tr class="tot"><td colspan="4" class="r">Total (BDT)</td><td class="r">${num(o.total)}</td></tr></tbody></table>
       <p class="muted" style="margin-top:28px">Thank you for shopping with Al Hadaf. Jazakallahu khairan.</p>
       <button onclick="print()">Print</button><script>setTimeout(()=>print(),400)<\/script></body></html>`);
@@ -418,23 +471,231 @@
     log.scrollTop = log.scrollHeight;
   }
 
-  // ================= CUSTOMERS =================
-  let custQuery = '';
+  // ================= CUSTOMERS (কে কতবার কিনেছে, অফার পাঠানো) =================
+  let custQuery = '', custSeg = 'all', custSort = 'last', custSel = new Set(), custList = [];
+  const DAY = 864e5;
+  const SEGMENTS = [
+    ['all', 'All', () => true],
+    ['vip', 'VIP', c => c.delivered >= 3 || c.spent >= 10000],
+    ['repeat', 'Bought 2+ times', c => c.orders - c.cancelled >= 2],
+    ['once', 'Bought once', c => c.orders - c.cancelled === 1],
+    ['custom', 'Custom thobe buyers', c => c.custom_orders > 0],
+    ['inactive', 'No order in 90 days', c => Date.now() - toDate(c.last_order) > 90 * DAY],
+    ['risk', 'Many cancels', c => c.cancelled >= 2 && c.cancelled >= c.delivered]
+  ];
+  const segOf = c => SEGMENTS.filter(([k, , f]) => k !== 'all' && k !== 'once' && f(c)).map(([k, l]) => `<b class="seg seg-${k}">${l}</b>`).join('');
+
   async function viewCustomers() {
-    const list = await api('customers' + (custQuery ? '?q=' + encodeURIComponent(custQuery) : ''));
-    $('#main').innerHTML = `
-      <div class="page-head"><h1>Customers <span class="muted">${list.length}</span></h1>
-        <input class="search" id="custSearch" type="search" placeholder="Search name or phone" value="${esc(custQuery)}"></div>
-      <p class="muted small">Everyone who has placed an order, grouped by mobile number. Repeat customers are your best people, call them first with new arrivals.</p>
-      ${list.length ? `<div class="card flush"><table class="tbl">
-        <thead><tr><th>Customer</th><th>Phone</th><th class="r">Orders</th><th class="r">Spent</th><th>Last order</th><th></th></tr></thead>
-        <tbody>${list.map(c => { const ph = c.phone.replace(/^\+?88/, ''); return `<tr>
-          <td><strong>${esc(c.name)}</strong>${c.orders > 1 ? ' <b class="tag">Repeat</b>' : ''}<span class="muted block">${esc(c.address)}</span></td>
-          <td><a href="tel:${esc(ph)}">${esc(ph)}</a></td><td class="r">${c.orders}</td><td class="r">${money(c.spent)}</td><td>${fmtWhen(c.last_order)}</td>
-          <td class="r nowrap"><a class="btn ghost sm" href="#orders" data-q="${esc(c.phone)}">Orders</a> <a class="btn ghost sm" href="https://wa.me/88${esc(ph)}" target="_blank" rel="noopener">WhatsApp</a></td></tr>`; }).join('')}</tbody></table></div>`
-        : '<p class="empty">No customers yet. They appear here after their first order.</p>'}`;
+    custList = await api('customers');
+    custSel = new Set();
+    drawCustomers();
+  }
+  function custFiltered() {
+    const seg = SEGMENTS.find(s => s[0] === custSeg);
+    const q = custQuery.toLowerCase();
+    let list = custList.filter(c => (seg ? seg[2](c) : (c.tags || '').split(', ').includes(custSeg.slice(4))) &&
+      (!q || (c.name || '').toLowerCase().includes(q) || c.phone.includes(q) || (c.tags || '').toLowerCase().includes(q)));
+    const by = { last: (a, b) => toDate(b.last_order) - toDate(a.last_order), orders: (a, b) => b.orders - a.orders || b.spent - a.spent, spent: (a, b) => b.spent - a.spent, name: (a, b) => (a.name || '').localeCompare(b.name || '') }[custSort];
+    return list.sort(by);
+  }
+  function drawCustomers() {
+    const list = custFiltered();
+    const tags = [...new Set(custList.flatMap(c => (c.tags || '').split(', ').filter(Boolean)))];
+    const total = list.reduce((s, c) => s + c.spent, 0);
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Customers <span class="muted">${custList.length}</span></h1>
+        <p class="muted">Everyone who has ordered, grouped by mobile number. Pick a group, tick customers and send them an offer.</p></div>
+        <div class="head-tools"><button class="btn ghost sm" id="csvCust">Download CSV</button><button class="btn primary sm" id="smsBtn" ${custSel.size ? '' : 'disabled'}>Send SMS offer${custSel.size ? ` (${custSel.size})` : ''}</button></div></div>
+      <div class="chips">${SEGMENTS.map(([k, l, f]) => `<button class="chip" data-seg="${k}" aria-pressed="${custSeg === k}">${l} <b>${custList.filter(f).length}</b></button>`).join('')}
+        ${tags.map(tg => `<button class="chip tagchip" data-seg="tag:${esc(tg)}" aria-pressed="${custSeg === 'tag:' + tg}"># ${esc(tg)} <b>${custList.filter(c => (c.tags || '').split(', ').includes(tg)).length}</b></button>`).join('')}</div>
+      <div class="filters"><input class="search" id="custSearch" type="search" placeholder="Search name, phone or tag" value="${esc(custQuery)}">
+        <label class="date-f">Sort <select id="custSort">${[['last', 'Latest order'], ['orders', 'Most orders'], ['spent', 'Most spent'], ['name', 'Name']].map(([k, l]) => `<option value="${k}" ${custSort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <span class="muted small">${list.length} shown · ${money(total)} spent in total</span></div>
+      ${list.length ? `<div class="card flush"><table class="tbl cust-tbl">
+        <thead><tr><th class="ck"><input type="checkbox" id="selAll" aria-label="Select all shown" ${list.length && list.every(c => custSel.has(c.phone)) ? 'checked' : ''}></th><th>Customer</th><th class="r">Times bought</th><th class="r">Spent</th><th>Last order</th><th></th></tr></thead>
+        <tbody>${list.slice(0, 500).map(c => `<tr class="${custSel.has(c.phone) ? 'sel' : ''}">
+          <td class="ck"><input type="checkbox" data-sel="${c.phone}" ${custSel.has(c.phone) ? 'checked' : ''} aria-label="Select ${esc(c.name)}"></td>
+          <td><button class="linklike" data-cust="${c.phone}"><strong>${esc(c.name)}</strong></button> ${segOf(c)}${(c.tags || '').split(', ').filter(Boolean).map(tg => `<b class="seg tag"># ${esc(tg)}</b>`).join('')}
+            <span class="muted block">${esc(c.phone)} · ${esc((c.address || '').slice(0, 60))}</span></td>
+          <td class="r"><strong class="big">${c.orders - c.cancelled}</strong><span class="muted block small">${c.delivered} delivered${c.cancelled ? ` · ${c.cancelled} cancelled` : ''}</span></td>
+          <td class="r">${money(c.spent)}</td><td>${fmtWhen(c.last_order)}<span class="muted block small">${ago(c.last_order)}</span></td>
+          <td class="r nowrap"><a class="btn ghost sm" href="tel:${esc(c.phone)}">Call</a> <a class="btn ghost sm" href="https://wa.me/88${esc(c.phone)}" target="_blank" rel="noopener">WhatsApp</a></td></tr>`).join('')}</tbody></table></div>
+        ${list.length > 500 ? '<p class="muted small">Showing the first 500. Use search or a group to narrow down.</p>' : ''}`
+        : '<p class="empty">No customers in this group yet.</p>'}
+      <dialog class="adlg" id="custDlg"></dialog><dialog class="adlg" id="smsDlg"></dialog></div>`;
+
+    const root = $('#main .vroot');
     let t;
-    $('#custSearch').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { custQuery = e.target.value.trim(); viewCustomers().then(() => { const s = $('#custSearch'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }).catch(fail); }, 400); });
+    $('#custSearch').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { custQuery = e.target.value.trim(); drawCustomers(); const s = $('#custSearch'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); }, 300); });
+    $('#custSort').addEventListener('change', e => { custSort = e.target.value; drawCustomers(); });
+    $('#csvCust').addEventListener('click', () => custCsv(custSel.size ? custList.filter(c => custSel.has(c.phone)) : list));
+    $('#smsBtn').addEventListener('click', () => openSmsDialog(custList.filter(c => custSel.has(c.phone))));
+    root.addEventListener('click', e => {
+      const sg = e.target.closest('[data-seg]'); if (sg) { custSeg = sg.dataset.seg; custSel = new Set(); drawCustomers(); return; }
+      const cu = e.target.closest('[data-cust]'); if (cu) openCustomer(cu.dataset.cust);
+    });
+    root.addEventListener('change', e => {
+      if (e.target.id === 'selAll') { list.forEach(c => (e.target.checked ? custSel.add(c.phone) : custSel.delete(c.phone))); drawCustomers(); return; }
+      const sel = e.target.dataset.sel;
+      if (sel) { e.target.checked ? custSel.add(sel) : custSel.delete(sel); e.target.closest('tr').classList.toggle('sel', e.target.checked);
+        $('#smsBtn').disabled = !custSel.size; $('#smsBtn').textContent = 'Send SMS offer' + (custSel.size ? ` (${custSel.size})` : ''); }
+    });
+  }
+
+  function custCsv(list) {
+    const cell = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const rows = [['Name', 'Phone', 'Phone (with 88)', 'Address', 'Times bought', 'Delivered', 'Cancelled', 'Spent', 'First order', 'Last order', 'Tags', 'Note']];
+    list.forEach(c => rows.push([c.name, c.phone, '88' + c.phone, c.address, c.orders - c.cancelled, c.delivered, c.cancelled, c.spent, fmtWhen(c.first_order), fmtWhen(c.last_order), c.tags, c.note]));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\ufeff' + rows.map(r => r.map(cell).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' }));
+    a.download = `al-hadaf-customers-${new Date().toISOString().slice(0, 10)}.csv`; document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  async function openCustomer(phone) {
+    const dlg = $('#custDlg');
+    dlg.innerHTML = '<div class="adlg-body"><p class="muted">Loading…</p></div>'; dlg.showModal();
+    const d = await api('customer?phone=' + phone).catch(e => { fail(e); dlg.close(); });
+    if (!d) return;
+    const c = custList.find(x => x.phone === phone) || {};
+    dlg.innerHTML = `<div class="adlg-body">
+      <div class="adlg-head"><div><h2>${esc(c.name)}</h2><p class="muted">${esc(phone)} · customer since ${fmtWhen(c.first_order)}</p></div><button class="icon" data-x aria-label="Close">×</button></div>
+      <div class="cstats"><div><strong>${c.orders - c.cancelled}</strong><span>times bought</span></div><div><strong>${money(c.spent)}</strong><span>spent</span></div>
+        <div><strong>${c.orders - c.cancelled ? money(Math.round(c.spent / (c.orders - c.cancelled))) : '—'}</strong><span>per order</span></div><div><strong>${c.cancelled}</strong><span>cancelled</span></div></div>
+      <div class="row-btns"><a class="btn ghost sm" href="tel:${esc(phone)}">Call</a><a class="btn ghost sm" href="https://wa.me/88${esc(phone)}" target="_blank" rel="noopener">WhatsApp</a>
+        <button class="btn ghost sm" id="cSms">Send SMS</button><div class="fraud" data-fraud="${esc(phone)}"><button class="btn ghost sm" type="button">Check courier record</button></div></div>
+      <form id="noteForm" class="note-form"><div class="g2"><label class="field"><span>Tags <small>comma separated, like Eid buyer, wholesale</small></span><input name="tags" value="${esc(d.tags)}"></label>
+        <label class="field"><span>Private note</span><input name="note" value="${esc(d.note)}" placeholder="Likes slim fit, calls after 6 pm…"></label></div>
+        <button class="btn primary sm" type="submit">Save</button></form>
+      ${d.profile && d.profile.meas ? `<p class="small"><b>Saved measurements:</b> ${esc(Object.entries(JSON.parse(d.profile.meas)).map(([k, v]) => `${k} ${v}`).join(', '))}</p>` : ''}
+      <h3 class="sub">What they bought</h3>
+      ${d.bought.length ? `<ul class="bought">${d.bought.map(b => `<li><span>${esc(b.name)}</span><b>× ${b.qty}</b></li>`).join('')}</ul>` : '<p class="muted">Nothing delivered yet.</p>'}
+      <h3 class="sub">Orders</h3>
+      <ul class="mini-list">${d.orders.map(o => `<li><a href="#orders" data-q="${esc(o.order_no)}"><span><strong>${esc(o.order_no)}</strong><span class="muted block">${fmtWhen(o.created_at)} · ${o.items.reduce((s, l) => s + l.qty, 0)} pcs${o.coupon ? ' · ' + esc(o.coupon) : ''}</span></span><span class="r">${money(o.total)}<span class="badge st-${o.status}">${stLabel(o.status)}</span></span></a></li>`).join('')}</ul>
+    </div>`;
+    dlg.querySelector('[data-x]').addEventListener('click', () => dlg.close());
+    dlg.querySelector('.fraud button').addEventListener('click', e => runFraud(e.target.parentElement));
+    $('#cSms').addEventListener('click', () => { dlg.close(); openSmsDialog([c]); });
+    dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); const a = e.target.closest('a[data-q]'); if (a) { orderQuery = a.dataset.q; orderFilter = ''; orderCustom = false; orderFrom = orderTo = ''; dlg.close(); } });
+    $('#noteForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      try {
+        const r = await api('customer', { method: 'PUT', body: { phone, tags: e.target.tags.value, note: e.target.note.value } });
+        c.tags = r.tags; c.note = e.target.note.value; toast('Customer saved'); dlg.close(); drawCustomers();
+      } catch (err) { fail(err); }
+    });
+  }
+
+  async function openSmsDialog(people) {
+    const dlg = $('#smsDlg');
+    const coupons = await api('coupons').catch(() => []);
+    const live = coupons.filter(c => c.active);
+    dlg.innerHTML = `<form class="adlg-body" id="smsForm">
+      <div class="adlg-head"><div><h2>Send SMS offer</h2><p class="muted">To ${people.length} customer${people.length > 1 ? 's' : ''}</p></div><button type="button" class="icon" data-x aria-label="Close">×</button></div>
+      ${integ.sms ? '' : '<p class="warn-box">SMS is not set up yet, so this cannot send. Add SMS_API_KEY and SMS_SENDER_ID in Cloudflare (see README). Meanwhile you can download these customers as CSV and use them in Facebook ads.</p>'}
+      ${live.length ? `<label class="field"><span>Add a coupon <small>optional</small></span><select id="smsCoupon"><option value="">No coupon</option>${live.map(c => `<option value="${esc(c.code)}">${esc(c.code)} · ${couponText(c)}</option>`).join('')}</select></label>` : '<p class="muted small">Tip: create a coupon first (Marketing › Coupons) and add it to the message.</p>'}
+      <label class="field"><span>Message <small>{name} becomes each customer’s first name</small></span>
+        <textarea name="message" rows="5">Assalamu alaikum {name}, thank you for shopping with Al Hadaf. </textarea></label>
+      <p class="muted small" id="smsCount"></p>
+      <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn primary" type="submit" ${integ.sms ? '' : 'disabled'}>Send to ${people.length}</button></div>
+      <p class="small" id="smsProg"></p></form>`;
+    dlg.showModal();
+    const f = $('#smsForm');
+    const count = () => { const m = f.message.value, uni = /[^\x00-\x7F]/.test(m), per = uni ? 70 : 160, parts = Math.max(1, Math.ceil((m.length + 6) / per));
+      $('#smsCount').textContent = `${m.length} letters · about ${parts} SMS each${uni ? ' (Bangla uses more SMS)' : ''} · about ${parts * people.length} SMS in total`; };
+    f.message.addEventListener('input', count); count();
+    const sc = $('#smsCoupon');
+    if (sc) sc.addEventListener('change', () => { if (sc.value) { const c = live.find(x => x.code === sc.value); f.message.value = f.message.value.replace(/\s*Use code \S+.*$/, '') + ` Use code ${c.code} for ${couponText(c).toLowerCase()}${c.expires ? ' till ' + c.expires : ''}. ${location.origin}`; count(); } });
+    dlg.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', () => dlg.close()));
+    f.addEventListener('submit', async e => {
+      e.preventDefault();
+      if (!confirm(`Send this SMS to ${people.length} customer${people.length > 1 ? 's' : ''}?`)) return;
+      const btn = f.querySelector('[type=submit]'); btn.disabled = true;
+      let sent = 0;
+      for (let i = 0; i < people.length; i += 40) {
+        $('#smsProg').textContent = `Sending ${Math.min(i + 40, people.length)} of ${people.length}…`;
+        try { const r = await api('sms', { method: 'POST', body: { message: f.message.value, people: people.slice(i, i + 40).map(p => ({ phone: p.phone, name: p.name })) } }); sent += r.sent; }
+        catch (err) { fail(err); break; }
+      }
+      $('#smsProg').textContent = `${sent} of ${people.length} SMS sent.`;
+      toast(`${sent} SMS sent`);
+    });
+  }
+
+  // ================= UNFINISHED ORDERS (চেকআউটে নম্বর দিয়ে অর্ডার করেনি) =================
+  async function viewAbandoned() {
+    const list = await api('abandoned');
+    const open = list.filter(a => a.status === 'open' || a.status === 'contacted');
+    const tmpl = a => `Assalamu alaikum ${(a.name || '').split(' ')[0]}, this is Al Hadaf. We saw you were ordering ${a.items.map(i => i.name).join(', ')}. Can we help you finish the order?`;
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Unfinished orders <span class="muted">${open.length}</span></h1>
+        <p class="muted">People who typed their mobile number at checkout but did not place the order. A friendly call or WhatsApp often brings them back.</p></div></div>
+      ${list.length ? `<div class="ab-list">${list.map(a => `<article class="card ab ${a.status}">
+        <div class="ab-head"><div><strong>${esc(a.name || 'No name')}</strong> <span class="muted">${esc(a.phone)}</span>
+          <span class="muted block small">${ago(a.updated_at)} · ${a.area === 'outside' ? 'Outside Dhaka' : 'Inside Dhaka'}${a.address ? ' · ' + esc(a.address.slice(0, 60)) : ''}</span></div>
+          <span class="badge ${a.status === 'recovered' ? 'st-delivered' : a.status === 'contacted' ? 'st-confirmed' : a.status === 'dismissed' ? '' : 'st-new'}">${{ open: 'Not contacted', contacted: 'Contacted', recovered: 'Ordered later', dismissed: 'Dismissed' }[a.status]}</span></div>
+        <ul class="o-items">${a.items.map(i => `<li><span>${esc(i.name)} · ${esc(i.size)} × ${i.qty}</span><span>${money(i.price * i.qty)}</span></li>`).join('')}</ul>
+        <p class="o-sum total"><span>Cart value</span><span>${money(a.subtotal)}</span></p>
+        ${a.status !== 'recovered' ? `<div class="o-actions"><a class="btn ghost sm" href="tel:${esc(a.phone)}">Call</a>
+          <a class="btn ghost sm" href="https://wa.me/88${esc(a.phone)}?text=${encodeURIComponent(tmpl(a))}" target="_blank" rel="noopener">WhatsApp</a>
+          ${a.status !== 'contacted' ? `<button class="btn ghost sm" data-ab="${a.id}" data-s="contacted">Mark contacted</button>` : ''}
+          ${a.status !== 'dismissed' ? `<button class="btn ghost sm" data-ab="${a.id}" data-s="dismissed">Dismiss</button>` : `<button class="btn ghost sm" data-ab="${a.id}" data-s="open">Restore</button>`}
+          <span class="spacer"></span><button class="btn ghost sm danger-t" data-abdel="${a.id}">Delete</button></div>` : ''}
+      </article>`).join('')}</div>` : '<p class="empty">Nothing here. When someone leaves at checkout after typing their number, they show up here.</p>'}</div>`;
+    $('#main .vroot').addEventListener('click', async e => {
+      const b = e.target.closest('[data-ab]'), d = e.target.closest('[data-abdel]');
+      try {
+        if (b) await api('abandoned/' + b.dataset.ab, { method: 'PUT', body: { status: b.dataset.s } });
+        else if (d && confirm('Delete this entry?')) await api('abandoned/' + d.dataset.abdel, { method: 'DELETE' });
+        else return;
+        viewAbandoned().catch(fail); pollBadges();
+      } catch (err) { fail(err); }
+    });
+  }
+
+  // ================= BANNERS (হোম পেজের বড় স্লাইড) =================
+  async function viewBanners() {
+    const list = await api('banners');
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Banners</h1><p class="muted">Big photos that slide at the top of the home page. Use wide photos, at least 1600 pixels across. Without banners the site shows the logo hero.</p></div>
+        <label class="upload"><input type="file" id="bnUp" accept="image/*" hidden><span class="btn primary">Add banner</span></label></div>
+      <p class="muted small" id="bnStatus"></p>
+      ${list.length ? `<div class="bn-list">${list.map(b => `<form class="card bn" data-id="${b.id}" data-image="${esc(b.image)}">
+        <div class="bn-img"><img src="/img/${esc(b.image)}" alt=""><label class="upload bn-change"><input type="file" accept="image/*" hidden data-change><span>Change photo</span></label></div>
+        <div class="bn-fields">
+          <div class="g2"><label class="field"><span>Heading (English)</span><input name="title_en" value="${esc(b.title_en)}" placeholder="Eid collection is here"></label>
+            <label class="field"><span>শিরোনাম (বাংলা)</span><input name="title_bn" value="${esc(b.title_bn)}" placeholder="ঈদ কালেকশন চলে এসেছে"></label></div>
+          <div class="g2"><label class="field"><span>Short line (English)</span><input name="text_en" value="${esc(b.text_en)}"></label>
+            <label class="field"><span>ছোট লাইন (বাংলা)</span><input name="text_bn" value="${esc(b.text_bn)}"></label></div>
+          <div class="g3"><label class="field"><span>Button (English)</span><input name="btn_en" value="${esc(b.btn_en)}" placeholder="Shop now"></label>
+            <label class="field"><span>বাটন (বাংলা)</span><input name="btn_bn" value="${esc(b.btn_bn)}" placeholder="এখনই দেখুন"></label>
+            <label class="field"><span>Button goes to</span><input name="link" value="${esc(b.link)}" placeholder="#/c/thobe" list="bnLinks"></label></div>
+          <div class="row-btns"><label class="check"><input type="checkbox" name="active" ${b.active ? 'checked' : ''}> Show</label>
+            <label class="date-f">Order <input name="sort" type="number" value="${b.sort}" class="num" style="width:70px"></label><span class="spacer"></span>
+            <button type="button" class="btn ghost sm danger-t" data-del>Delete</button><button class="btn primary sm" type="submit">Save banner</button></div>
+        </div></form>`).join('')}</div>` : '<p class="empty">No banners yet. Add an Eid or new-collection photo to make the home page come alive.</p>'}
+      <datalist id="bnLinks"><option value="#/c/all"><option value="#/custom"><option value="#/gallery"></datalist></div>`;
+    api('categories').then(cs => { $('#bnLinks').insertAdjacentHTML('beforeend', cs.map(c => `<option value="#/c/${esc(c.slug)}">`).join('')); }).catch(() => {});
+    $('#bnUp').addEventListener('change', async e => {
+      const file = e.target.files[0]; if (!file) return;
+      $('#bnStatus').textContent = 'Uploading…';
+      try { const key = await uploadFile(file, 2000); await api('banners', { method: 'POST', body: { image: key, active: true, sort: list.length } }); toast('Banner added. Add a heading and save.'); viewBanners().catch(fail); }
+      catch (err) { fail(err); $('#bnStatus').textContent = ''; }
+    });
+    $('#main').querySelectorAll('.bn').forEach(fm => {
+      fm.querySelector('[data-change]').addEventListener('change', async e => {
+        const file = e.target.files[0]; if (!file) return;
+        try { toast('Uploading…'); fm.dataset.image = await uploadFile(file, 2000); fm.querySelector('.bn-img img').src = '/img/' + fm.dataset.image; toast('Photo changed. Save the banner to keep it.'); } catch (err) { fail(err); }
+      });
+      fm.addEventListener('submit', async e => {
+        e.preventDefault();
+        const body = { ...Object.fromEntries(new FormData(fm)), active: fm.active.checked, image: fm.dataset.image };
+        try { await api('banners/' + fm.dataset.id, { method: 'PUT', body }); toast('Banner saved'); } catch (err) { fail(err); }
+      });
+      fm.querySelector('[data-del]').addEventListener('click', async () => {
+        if (!confirm('Delete this banner?')) return;
+        try { await api('banners/' + fm.dataset.id, { method: 'DELETE' }); toast('Banner deleted'); viewBanners().catch(fail); } catch (err) { fail(err); }
+      });
+    });
   }
 
   // ================= PRODUCTS =================
@@ -443,7 +704,8 @@
   }
 
   async function viewProducts() {
-    await loadCatalog();
+    const [, alerts] = await Promise.all([loadCatalog(), api('stock-alerts').catch(() => [])]);
+    const waiting = code => alerts.filter(a => a.product_code === code).reduce((s, a) => s + a.n, 0);
     const catName = id => (categories.find(c => c.id === id) || {}).name_en || '—';
     $('#main').innerHTML = `
       <div class="page-head"><h1>Products <span class="muted">${products.length}</span></h1><a class="btn primary" href="#product/new">Add product</a></div>
@@ -454,7 +716,7 @@
           <div class="pthumb" style="--c:${esc(p.color_hex)}">${p.images[0] ? `<img src="/img/${esc(p.images[0])}" alt="" loading="lazy">` : ''}</div>
           <div class="pinfo"><strong>${esc(p.name_en)}</strong><span class="muted">${esc(p.code)} · ${esc(p.color_en || '')} · ${esc(catName(p.category_id))}</span></div>
           <div class="pprice">${money(p.price)}</div>
-          <div class="pstock ${stock === 0 ? 'zero' : stock <= 5 ? 'low' : ''}">${stock} in stock${out ? `<span class="muted">${out} size${out > 1 ? 's' : ''} sold out</span>` : ''}</div>
+          <div class="pstock ${stock === 0 ? 'zero' : stock <= 5 ? 'low' : ''}">${stock} in stock${out ? `<span class="muted">${out} size${out > 1 ? 's' : ''} sold out</span>` : ''}${waiting(p.code) ? `<span class="waiting">${waiting(p.code)} waiting for restock</span>` : ''}</div>
           <div>${p.active ? '<span class="badge st-delivered">Live</span>' : '<span class="badge">Hidden</span>'}</div>
         </a>`;
       }).join('')}</div>` : '<p class="empty">No products yet. Add your first product.</p>'}`;
@@ -625,8 +887,8 @@
       if (!sizes.filter(s => s.label.trim()).length) return toast('Add at least one size.', true);
       const btn = $('#saveBtn'); btn.disabled = true;
       try {
-        await api(isNew ? 'products' : 'products/' + p.id, { method: isNew ? 'POST' : 'PUT', body });
-        toast(isNew ? 'Product added' : 'Changes saved');
+        const r = await api(isNew ? 'products' : 'products/' + p.id, { method: isNew ? 'POST' : 'PUT', body });
+        toast(r.notified ? `Changes saved. ${r.notified} customer${r.notified > 1 ? 's' : ''} will get a back-in-stock SMS.` : isNew ? 'Product added' : 'Changes saved');
         location.hash = 'products';
       } catch (err) { fail(err); btn.disabled = false; }
     });
@@ -643,9 +905,9 @@
   }
 
   // ছবি ব্রাউজারেই ছোট করা হয় (১৬০০px, WebP), যাতে আপলোড দ্রুত হয়
-  async function compress(file) {
+  async function compress(file, max = 1600) {
     const bmp = await createImageBitmap(file);
-    const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
     const c = document.createElement('canvas');
     c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
     c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
@@ -857,6 +1119,7 @@
   // ================= SHOP INFO =================
   async function viewSettings() {
     const s = await api('settings');
+    await pollBadges();
     const f = (k, label, opts = {}) => `<label class="field"><span>${label}${opts.hint ? ` <small>${opts.hint}</small>` : ''}</span>${opts.area
       ? `<textarea name="${k}" rows="2">${esc(s[k])}</textarea>` : `<input name="${k}" value="${esc(s[k])}" type="${opts.type || 'text'}" placeholder="${esc(opts.ph || '')}" ${opts.type === 'number' ? 'min="0"' : ''}>`}</label>`;
     $('#main').innerHTML = `
@@ -890,6 +1153,30 @@
           <p class="muted small">The short line at the very top of the website, for offers or delivery news.</p>
           <div class="g2">${f('announce_en', 'English', { area: true })}${f('announce_bn', 'বাংলা', { area: true })}</div>
         </section>
+        <section class="card"><h2>Bundle offer</h2>
+          <p class="muted small">Automatic discount when a customer buys several pieces together, like “Buy 2, save 10%”. It shows on product pages and in the cart. Set either box to 0 to turn it off.</p>
+          <div class="g2">${f('bundle_min', 'Minimum pieces', { type: 'number', ph: '2' })}${f('bundle_pct', 'Discount (%)', { type: 'number', hint: 'up to 50', ph: '10' })}</div>
+        </section>
+        <section class="card"><h2>Online payment and logins</h2>
+          <ul class="integ">
+            <li>${integ.bkash ? '<span class="badge st-delivered">Connected</span>' : '<span class="badge">Not set up</span>'} <b>bKash online payment.</b> Customers pay inside bKash at checkout, no Transaction ID needed. Needs BKASH_APP_KEY, BKASH_APP_SECRET, BKASH_USERNAME, BKASH_PASSWORD and BKASH_MODE=live from your bKash merchant account.</li>
+            <li>${integ.sms ? '<span class="badge st-delivered">On</span>' : '<span class="badge">Off</span>'} <b>Customer login.</b> Works when SMS is set up: customers log in with a code sent to their phone.</li>
+            <li>${integ.bdcourier ? '<span class="badge st-delivered">Connected</span>' : '<span class="badge">Not set up</span>'} <b>Courier fraud check.</b> Shows how often a number received or returned parcels across all couriers. Needs BDCOURIER_API_KEY from bdcourier.com.</li>
+          </ul>
+        </section>
+        <section class="card"><h2>Facebook Pixel</h2>
+          <p class="muted small">Paste the Pixel ID from Facebook Events Manager (numbers only). The website then reports page views, product views, add to cart, checkout and purchases, so your Facebook ads can find more buyers.</p>
+          <div class="g2">${f('fb_pixel', 'Pixel ID', { ph: '123456789012345' })}</div>
+        </section>
+        <section class="card"><h2>SMS to customers</h2>
+          <p class="muted small">${integ.sms ? '<span class="badge st-delivered">Connected</span> ' : '<span class="badge">Not set up</span> '}Sends an SMS from bulksmsbd.net when the order status changes. Add <b>SMS_API_KEY</b> and <b>SMS_SENDER_ID</b> as secrets in Cloudflare. Steps are in the README.</p>
+          <div class="checks-row">
+            ${[['sms_new', 'Order received'], ['sms_confirmed', 'Order confirmed'], ['sms_shipped', 'Order shipped'], ['sms_delivered', 'Order delivered']].map(([k, l]) => `<label class="check"><input type="checkbox" data-flag="${k}" ${s[k] ? 'checked' : ''}> ${l}</label>`).join('')}
+          </div>
+        </section>
+        <section class="card"><h2>Courier</h2>
+          <p class="muted small">${integ.steadfast ? '<span class="badge st-delivered">Steadfast connected</span> ' : '<span class="badge">Not set up</span> '}With Steadfast connected, each order gets a “Send to Steadfast” button that books the parcel and saves the tracking number. Add <b>STEADFAST_API_KEY</b> and <b>STEADFAST_SECRET_KEY</b> as secrets in Cloudflare (ask Steadfast support for your API keys).</p>
+        </section>
         <section class="card"><h2>Phone notifications</h2>
           <p class="muted small">Get a Telegram message on your phone for every new order and chat. Create a bot with @BotFather, then add two secrets in Cloudflare (Worker › Settings › Variables and Secrets): <b>TELEGRAM_BOT_TOKEN</b> and <b>TELEGRAM_CHAT_ID</b>. Full steps are in the README.</p>
         </section>
@@ -897,7 +1184,86 @@
       </form>`;
     $('#sForm').addEventListener('submit', async e => {
       e.preventDefault();
-      try { await api('settings', { method: 'PUT', body: Object.fromEntries(new FormData(e.target)) }); toast('Shop info saved'); } catch (err) { fail(err); }
+      const body = Object.fromEntries(new FormData(e.target));
+      e.target.querySelectorAll('[data-flag]').forEach(c => { body[c.dataset.flag] = c.checked ? '1' : ''; });
+      try { await api('settings', { method: 'PUT', body }); toast('Shop info saved'); } catch (err) { fail(err); }
+    });
+  }
+
+  // ================= COUPONS =================
+  const couponText = c => c.kind === 'percent' ? `${c.value}% off` : c.kind === 'fixed' ? `${money(c.value)} off` : 'Free delivery';
+  async function viewCoupons() {
+    const list = await api('coupons');
+    const today = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
+    const state = c => !c.active ? ['Paused', ''] : c.expires && c.expires < today ? ['Expired', 'st-cancelled'] : c.max_uses && c.used >= c.max_uses ? ['Used up', 'st-cancelled'] : ['Active', 'st-delivered'];
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Coupons</h1><p class="muted">Codes customers type at checkout. Share them on Facebook, in SMS or on the parcel.</p></div><button class="btn primary" id="newCoupon">New coupon</button></div>
+      <div id="couponEd"></div>
+      ${list.length ? `<div class="card flush"><table class="tbl"><thead><tr><th>Code</th><th>Discount</th><th>Minimum order</th><th class="r">Used</th><th>Ends</th><th>Status</th><th></th></tr></thead>
+        <tbody>${list.map(c => { const [l, cls] = state(c); return `<tr><td><strong class="code">${esc(c.code)}</strong></td><td>${couponText(c)}</td><td>${c.min_order ? money(c.min_order) : '—'}</td>
+          <td class="r">${c.used}${c.max_uses ? ' / ' + c.max_uses : ''}</td><td>${c.expires || 'No end date'}</td><td><span class="badge ${cls}">${l}</span></td>
+          <td class="r nowrap"><button class="btn ghost sm" data-cedit="${c.id}">Edit</button> <button class="btn ghost sm danger-t" data-cdel="${c.id}">Delete</button></td></tr>`; }).join('')}</tbody></table></div>`
+        : '<p class="empty">No coupons yet. Try one for Eid, like EID10 for 10% off.</p>'}</div>`;
+    const open = c => {
+      $('#couponEd').innerHTML = `<form class="card" id="cForm">
+        <h2>${c.id ? 'Edit coupon' : 'New coupon'}</h2>
+        <div class="g3">
+          <label class="field"><span>Code <small>letters and numbers</small></span><input name="code" value="${esc(c.code || '')}" placeholder="EID10" required style="text-transform:uppercase"></label>
+          <label class="field"><span>Type</span><select name="kind">${[['percent', 'Percent off'], ['fixed', 'Fixed amount off'], ['free_ship', 'Free delivery']].map(([k, l]) => `<option value="${k}" ${c.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label class="field" id="cVal"><span>Discount <small id="cValHint"></small></span><input name="value" type="number" min="0" value="${c.value || ''}"></label>
+        </div>
+        <div class="g3">
+          <label class="field"><span>Minimum order (BDT) <small>0 for none</small></span><input name="min_order" type="number" min="0" value="${c.min_order || 0}"></label>
+          <label class="field"><span>How many times <small>0 for unlimited</small></span><input name="max_uses" type="number" min="0" value="${c.max_uses || 0}"></label>
+          <label class="field"><span>Last day <small>optional</small></span><input name="expires" type="date" value="${esc(c.expires || '')}"></label>
+        </div>
+        <div class="row-btns"><label class="check"><input type="checkbox" name="active" ${c.active === 0 ? '' : 'checked'}> Active</label><span class="spacer"></span>
+          <button type="button" class="btn ghost sm" id="cCancel">Cancel</button><button class="btn primary sm" type="submit">${c.id ? 'Save coupon' : 'Create coupon'}</button></div>
+      </form>`;
+      const f = $('#cForm');
+      const kind = () => { const k = f.kind.value; $('#cVal').hidden = k === 'free_ship'; $('#cValHint').textContent = k === 'percent' ? '% (1–90)' : 'BDT'; };
+      f.kind.addEventListener('change', kind); kind();
+      f.code.focus();
+      $('#cCancel').addEventListener('click', () => { $('#couponEd').innerHTML = ''; });
+      f.addEventListener('submit', async e => {
+        e.preventDefault();
+        const body = { ...Object.fromEntries(new FormData(f)), active: f.active.checked };
+        try { await api('coupons' + (c.id ? '/' + c.id : ''), { method: c.id ? 'PUT' : 'POST', body }); toast('Coupon saved'); viewCoupons().catch(fail); } catch (err) { fail(err); }
+      });
+    };
+    $('#newCoupon').addEventListener('click', () => open({}));
+    $('#main .vroot').addEventListener('click', async e => {
+      const ed = e.target.closest('[data-cedit]'), del = e.target.closest('[data-cdel]');
+      if (ed) open(list.find(c => c.id === +ed.dataset.cedit));
+      if (del && confirm('Delete this coupon? Orders that used it keep their discount.')) {
+        try { await api('coupons/' + del.dataset.cdel, { method: 'DELETE' }); toast('Coupon deleted'); viewCoupons().catch(fail); } catch (err) { fail(err); }
+      }
+    });
+  }
+
+  // ================= REVIEWS =================
+  async function viewReviews() {
+    const list = await api('reviews');
+    const pending = list.filter(r => r.status === 'pending').length;
+    const stars = n => '★★★★★'.slice(0, n) + '☆☆☆☆☆'.slice(0, 5 - n);
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Reviews ${pending ? `<span class="muted">${pending} waiting</span>` : ''}</h1><p class="muted">Customers write reviews on product pages. They show on the website only after you approve them.</p></div></div>
+      ${list.length ? `<div class="rv-admin">${list.map(r => `<article class="card rv-card ${r.status}">
+        <div class="rv-h"><span class="rv-st" aria-label="${r.rating} stars">${stars(r.rating)}</span><strong>${esc(r.name)}</strong>${r.verified ? '<b class="tag ok">Verified buyer</b>' : ''}
+          <span class="badge ${r.status === 'approved' ? 'st-delivered' : r.status === 'pending' ? 'st-new' : ''}">${r.status === 'approved' ? 'On website' : r.status === 'pending' ? 'Waiting' : 'Hidden'}</span></div>
+        <p class="muted small">${esc(r.name_en || r.product_code)} · ${esc(r.product_code)} · ${fmtWhen(r.created_at)}${r.phone ? ' · ' + esc(r.phone) : ''}</p>
+        ${r.body ? `<p>${esc(r.body)}</p>` : ''}
+        <div class="row-btns">${r.status !== 'approved' ? `<button class="btn primary sm" data-rv="${r.id}" data-s="approved">Approve</button>` : `<button class="btn ghost sm" data-rv="${r.id}" data-s="hidden">Hide</button>`}
+          <button class="btn ghost sm danger-t" data-rvdel="${r.id}">Delete</button></div>
+      </article>`).join('')}</div>` : '<p class="empty">No reviews yet. After delivery, ask customers to review on the website. The “Order delivered” SMS does this for you.</p>'}</div>`;
+    $('#main .vroot').addEventListener('click', async e => {
+      const b = e.target.closest('[data-rv]'), d = e.target.closest('[data-rvdel]');
+      try {
+        if (b) { await api('reviews/' + b.dataset.rv, { method: 'PUT', body: { status: b.dataset.s } }); toast(b.dataset.s === 'approved' ? 'Review approved' : 'Review hidden'); }
+        else if (d && confirm('Delete this review?')) { await api('reviews/' + d.dataset.rvdel, { method: 'DELETE' }); toast('Review deleted'); }
+        else return;
+        viewReviews().catch(fail); pollBadges();
+      } catch (err) { fail(err); }
     });
   }
 

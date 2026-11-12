@@ -1,12 +1,17 @@
 // ===== Al Hadaf — app.js =====
 (function () {
   'use strict';
+  // /p/AH-1001 বা /c/thobe লিংক (Google আর শেয়ারের জন্য) এলে অ্যাপের পেজে নিয়ে যাওয়া
+  const pathRoute = location.pathname.match(/^\/(p|c)\/([^/]+)\/?$/);
+  if (pathRoute && !location.hash) history.replaceState(null, '', '/#/' + pathRoute[1] + '/' + pathRoute[2]);
 
   const $ = (s, el = document) => el.querySelector(s);
   const LANG_KEY = 'alhadaf_lang';
   const CART_KEY = 'alhadaf_cart_v2';
   const MEAS_KEY = 'alhadaf_meas';
   const CHAT_KEY = 'alhadaf_chat';
+  const WISH_KEY = 'alhadaf_wish';
+  const RECENT_KEY = 'alhadaf_recent';
 
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -17,6 +22,10 @@
   let SHOP = { whatsapp: '', phone: '', email: '', bkash: '', facebook: '', instagram: '', messenger: '', youtube: '', tiktok: '', address: { en: '', bn: '' }, deliveryInside: 0, deliveryOutside: 0, announce: { en: '', bn: '' } };
   let CUSTOM = null;
   let GALLERY = [];
+  let BANNERS = [];
+  let FEATURES = { otp: false, bkashPay: false };
+  const readList = k => { try { const v = JSON.parse(store.get(k) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } };
+  let wish = readList(WISH_KEY), recent = readList(RECENT_KEY);
   let CATEGORIES = [{ id: 'all', name: { en: 'All', bn: 'সব' } }];
   let PRODUCTS = [];
   let loaded = false;
@@ -31,15 +40,19 @@
     const s = d.shop;
     SHOP = {
       whatsapp: s.whatsapp, phone: s.phone, email: s.email, bkash: s.bkash, facebook: s.facebook, instagram: s.instagram,
-      messenger: s.messenger || '', youtube: s.youtube || '', tiktok: s.tiktok || '',
+      messenger: s.messenger || '', youtube: s.youtube || '', tiktok: s.tiktok || '', fbPixel: String(s.fb_pixel || '').replace(/\D/g, ''),
       address: { en: s.address_en, bn: s.address_bn }, announce: { en: s.announce_en, bn: s.announce_bn },
-      deliveryInside: Number(s.delivery_inside) || 0, deliveryOutside: Number(s.delivery_outside) || 0
+      deliveryInside: Number(s.delivery_inside) || 0, deliveryOutside: Number(s.delivery_outside) || 0,
+      bundleMin: Number(s.bundle_min) || 0, bundlePct: Number(s.bundle_pct) || 0
     };
     CATEGORIES = [{ id: 'all', name: { en: 'All', bn: 'সব' } }, ...d.categories];
     PRODUCTS = d.products.map(p => ({ ...p, shape: PLACEHOLDER[p.cat] || 'thobe' }));
     CUSTOM = d.custom && d.custom.fabrics.length ? d.custom : null;
     GALLERY = d.gallery || [];
+    BANNERS = d.banners || [];
+    FEATURES = d.features || FEATURES;
     loaded = true;
+    initPixel();
     cart = loadCart();
   }
 
@@ -52,6 +65,21 @@
   const catOf = id => CATEGORIES.find(c => c.id === id);
   const waLink = text => `https://wa.me/${SHOP.whatsapp}` + (text ? `?text=${encodeURIComponent(text)}` : '');
   const sizeHtml = s => esc(s.label);
+  const starsHtml = (n, cls = '') => `<span class="stars ${cls}" role="img" aria-label="${t('stars', n)}">${[1, 2, 3, 4, 5].map(i => `<i class="${n >= i - .25 ? 'on' : n >= i - .75 ? 'half' : ''}"></i>`).join('')}</span>`;
+
+  // ---------- Facebook Pixel (Admin › Shop info-তে Pixel ID দিলে চালু হয়) ----------
+  let pixelOn = false;
+  function initPixel() {
+    if (pixelOn || !SHOP.fbPixel) return;
+    pixelOn = true;
+    /* eslint-disable */
+    !function (f, b, e, v, n, t, s) { if (f.fbq) return; n = f.fbq = function () { n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments) };
+      if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0'; n.queue = []; t = b.createElement(e); t.async = !0;
+      t.src = v; s = b.getElementsByTagName(e)[0]; s.parentNode.insertBefore(t, s) }(window, document, 'script', 'https://connect.facebook.net/en_US/fbevents.js');
+    /* eslint-enable */
+    window.fbq('init', SHOP.fbPixel);
+  }
+  const px = (ev, data) => { try { if (pixelOn && window.fbq) window.fbq('track', ev, data); } catch (e) { /* ignore */ } };
 
   // কার্টে থাকে { sizeId, qty }; পণ্য আর সাইজ খুঁজে নেওয়া হয় স্টোর থেকে
   const findSize = sizeId => { for (const p of PRODUCTS) { const s = p.sizes.find(x => x.id === sizeId); if (s) return { p, s }; } return null; };
@@ -116,13 +144,16 @@
     ? `<span class="price-now">${money(p.price)}</span> <s>${money(p.compare)}</s>`
     : money(p.price);
 
-  function card(p) {
+  const wishBtn = (p, cls = '') => `<button class="wish ${cls}" data-wish="${esc(p.id)}" aria-pressed="${wish.includes(p.id)}" aria-label="${wish.includes(p.id) ? t('wishRemove') : t('wishAdd')}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.4a4.3 4.3 0 0 1 7.5 2.4C19.5 15.4 12 20 12 20Z"/></svg></button>`;
+  const card = p => `<div class="card-wrap">${cardLink(p)}${wishBtn(p)}</div>`;
+  function cardLink(p) {
     const alt = p.images && p.images[1] ? `<div class="card-alt">${media(p, 1)}</div>` : '';
     return `<a class="card" href="#/p/${p.id}">
       <div class="card-media">${media(p, 0)}${alt}${p.badge ? `<span class="badge">${esc(L(p.badge))}</span>` : ''}</div>
       <h3>${esc(L(p.name))}</h3>
       <p class="card-sub">${esc(L(p.color))}</p>
       <p class="card-price">${priceHtml(p)}</p>
+      ${p.rating ? `<p class="card-rating">${starsHtml(p.rating.avg, 'sm')}<span>(${p.rating.count})</span></p>` : ''}
     </a>`;
   }
 
@@ -136,7 +167,7 @@
     const fresh = (newOnes.length ? newOnes : PRODUCTS).slice(0, 4);
     const combo = PRODUCTS.find(p => p.cat === 'father-son');
     return `
-    <section class="hero">
+    ${BANNERS.length ? bannerSlider() : `<section class="hero">
       <div class="wrap hero-row">
         <div class="hero-copy">
           <h1>${t('heroTitle')}</h1>
@@ -144,10 +175,10 @@
           <a class="btn btn-dark" href="#/c/thobe">${t('shopThobe')}</a>
         </div>
         <div class="hero-mark" aria-hidden="true">
-          <picture><source srcset="mark-dark.png" media="(prefers-color-scheme: dark)"><img src="mark-light.png" alt="" width="661" height="276"></picture>
+          <picture><source srcset="/mark-dark.png" media="(prefers-color-scheme: dark)"><img src="/mark-light.png" alt="" width="661" height="276"></picture>
         </div>
       </div>
-    </section>
+    </section>`}
     <section class="wrap block">
       <h2 class="block-title">${t('shopBy')}</h2>
       <div class="tiles">${tiles}</div>
@@ -166,10 +197,8 @@
         <p class="promo-price">${t('from')} ${money(CUSTOM.basePrice + Math.min(...CUSTOM.fabrics.map(f => f.add)))}</p>
         <a class="btn btn-dark" href="#/custom">${t('customPromoBtn')}</a></div>
     </div></section>` : ''}
-    ${GALLERY.length ? `<section class="wrap block">
-      <div class="block-head"><h2 class="block-title">${t('galleryTitle')}</h2><a class="link" href="#/gallery">${t('viewAll')}</a></div>
-      <div class="g-strip">${GALLERY.slice(0, 6).map((g, i) => `<button class="g-item" data-gal="${i}" aria-label="${esc(L(g.caption) || t('photo') + ' ' + (i + 1))}"><img src="${esc(g.image)}" alt="${esc(L(g.caption))}" loading="lazy"></button>`).join('')}</div>
-    </section>` : ''}
+    ${marquee()}
+    ${recentBlock()}
     <section class="wrap trust">${STR[lang].trust.map(([h, s]) => `<div><h3>${h}</h3><p>${s}</p></div>`).join('')}</section>`;
   }
 
@@ -214,13 +243,16 @@
         <div class="pdp-info">
           <h1>${esc(L(p.name))}</h1>
           <p class="muted sku">${t('code')}: ${p.id}</p>
-          <p class="pdp-price">${priceHtml(p)}</p>
+          <div class="pdp-title-row"><p class="pdp-price">${priceHtml(p)}</p>${wishBtn(p, 'lg')}</div>
+          ${SHOP.bundleMin >= 2 && SHOP.bundlePct ? `<p class="bundle-note">${t('bundleNote', SHOP.bundleMin, SHOP.bundlePct)}</p>` : ''}
+          ${p.rating ? `<button class="pdp-rating" data-scroll="reviews">${starsHtml(p.rating.avg)}<span>${p.rating.avg} · ${t('reviewsCount', p.rating.count)}</span></button>` : ''}
 
           <p class="opt-label">${t('color')}: <strong>${esc(L(p.color))}</strong></p>
           ${siblings.length > 1 ? `<div class="swatches">${siblings.map(s => `<a class="swatch" href="#/p/${s.id}" style="--sw:${s.color.hex}" aria-label="${esc(L(s.color))}" ${s.id === p.id ? 'aria-current="true"' : ''}></a>`).join('')}</div>` : ''}
 
           <div class="opt-row"><p class="opt-label">${t('size')}</p>${(p.shape === 'thobe' || p.shape === 'combo') && p.sizes.length > 1 ? `<a class="link" href="#/page/size-guide">${t('sizeGuide')}</a>` : ''}</div>
-          <div class="sizes">${p.sizes.map(s => `<button class="size" data-size="${s.id}" aria-pressed="${p.sizes.length === 1 && s.stock > 0}" ${s.stock > 0 ? '' : `disabled title="${t('soldOut')}"`}>${sizeHtml(s)}</button>`).join('')}</div>
+          <div class="sizes">${p.sizes.map(s => `<button class="size ${s.stock > 0 ? '' : 'out'}" data-size="${s.id}" aria-pressed="${p.sizes.length === 1 && s.stock > 0}" ${s.stock > 0 ? '' : `title="${t('soldOut')}" aria-label="${esc(s.label)}, ${t('soldOut')}"`}>${sizeHtml(s)}</button>`).join('')}</div>
+          <div id="notifyBox"></div>
           <p class="muted small stock-note" id="stockNote"></p>
           <p class="error" id="sizeErr" hidden>${t('pickSize')}</p>
 
@@ -234,6 +266,11 @@
             <button class="link link-btn" data-chat>${icon('chat', 16)}${t('chatTitle')}</button>
           </div>
           ${CUSTOM && p.shape === 'thobe' ? `<a class="custom-cta" href="#/custom">${t('customFromProduct')}</a>` : ''}
+          <div class="share-row"><span class="muted small">${t('share')}</span>
+            <a class="share fb" href="https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(location.origin + '/p/' + p.id)}" target="_blank" rel="noopener" aria-label="Facebook">${icon('facebook', 18)}</a>
+            <a class="share wa" href="https://wa.me/?text=${encodeURIComponent(L(p.name) + ' ' + location.origin + '/p/' + p.id)}" target="_blank" rel="noopener" aria-label="WhatsApp">${icon('whatsapp', 18)}</a>
+            <button class="share" data-copy="${esc(location.origin + '/p/' + p.id)}" aria-label="${t('copyLink')}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></button>
+          </div>
 
           <div class="pdp-desc">
             <p>${esc(L(p.desc))}</p>
@@ -244,8 +281,40 @@
           <details class="acc"><summary>${t('deliveryExchange')}</summary><p>${t('deliveryText', money(SHOP.deliveryInside), money(SHOP.deliveryOutside))}</p></details>
         </div>
       </div>
+      ${reviewsBlock(p)}
+      ${recentBlock(p.id)}
       ${rel.length ? `<section class="block"><h2 class="block-title">${t('related')}</h2><div class="grid">${rel.map(card).join('')}</div></section>` : ''}
     </div>`;
+  }
+
+  function reviewsBlock(p) {
+    const r = p.rating, list = p.reviews || [];
+    const dist = [5, 4, 3, 2, 1].map(n => [n, list.filter(x => x.rating === n).length]);
+    return `<section class="block reviews" id="reviews" data-reveal>
+      <div class="rv-top">
+        <div class="rv-sum">
+          <h2 class="block-title">${t('reviews')}</h2>
+          ${r ? `<p class="rv-avg"><strong>${r.avg}</strong>${starsHtml(r.avg)}<span class="muted">${t('reviewsCount', r.count)}</span></p>
+            <ul class="rv-dist">${dist.map(([n, c]) => `<li><span>${n}</span><i style="--w:${list.length ? c / list.length * 100 : 0}%"></i><span class="muted">${c}</span></li>`).join('')}</ul>` : `<p class="muted">${t('noReviews')}</p>`}
+          <button class="btn btn-outline" id="rvOpen">${t('writeReview')}</button>
+        </div>
+        <div class="rv-list">${list.map(x => `<article class="rv">
+          <div class="rv-meta">${starsHtml(x.rating, 'sm')}<strong>${esc(x.name)}</strong>${x.verified ? `<span class="rv-ver">${t('verified')}</span>` : ''}<time class="muted">${esc(x.date)}</time></div>
+          ${x.body ? `<p>${esc(x.body).replace(/\n/g, '<br>')}</p>` : ''}</article>`).join('')}</div>
+      </div>
+      <form class="rv-form" id="rvForm" hidden novalidate>
+        <fieldset class="rv-stars"><legend>${t('yourRating')}</legend>
+          ${[5, 4, 3, 2, 1].map(n => `<input type="radio" name="rating" value="${n}" id="rv${n}"><label for="rv${n}" title="${t('stars', n)}" aria-label="${t('stars', n)}"></label>`).join('')}
+        </fieldset>
+        <div class="rv-fields">
+          <label class="field"><span>${t('reviewName')}</span><input name="name" autocomplete="name"></label>
+          <label class="field"><span>${t('reviewPhone')}</span><input name="phone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="01XXXXXXXXX"><small class="muted">${t('reviewPhoneNote')}</small></label>
+        </div>
+        <label class="field"><span>${t('reviewBody')}</span><textarea name="body" placeholder="${t('reviewBodyPh')}"></textarea></label>
+        <p class="error" id="rvErr" hidden></p>
+        <button class="btn btn-dark" type="submit">${t('reviewSend')}</button>
+      </form>
+    </section>`;
   }
 
   function pageInfo(slug) {
@@ -422,16 +491,48 @@
   }
 
   // ---------- গ্যালারি ----------
+  // হোম পেজে দুই সারি ছবি উল্টো দিকে নিজে নিজে স্লাইড করে; মাউস রাখলে থেমে যায়
+  function marquee() {
+    galCat = 'all';
+    const list = allGallery();
+    if (!list.length) return '';
+    const half = list.length > 7 ? Math.ceil(list.length / 2) : list.length;
+    const rows = list.length > 7 ? [list.slice(0, half), list.slice(half)] : [list];
+    const row = (items, offset, rev) => {
+      let fill = items; while (fill.length < 8) fill = fill.concat(items);
+      const html = fill.map((g, k) => `<button class="mq-item" data-gal="${(offset + (k % items.length))}" tabindex="${k < items.length ? 0 : -1}" aria-label="${esc(g.caption || t('photo'))}"><img src="${esc(g.src)}" alt="" loading="lazy"></button>`).join('');
+      return `<div class="mq-row ${rev ? 'rev' : ''}" style="--dur:${Math.max(30, fill.length * 5)}s"><div class="mq-track">${html}</div><div class="mq-track" aria-hidden="true">${html.replace(/tabindex="0"/g, 'tabindex="-1"')}</div></div>`;
+    };
+    return `<section class="block mq-block" data-reveal>
+      <div class="wrap block-head"><h2 class="block-title">${t('galleryHomeTitle')}</h2><a class="link" href="#/gallery">${t('viewAll')}</a></div>
+      <div class="marquee">${rows.map((r, i) => row(r, i ? half : 0, i === 1)).join('')}</div>
+    </section>`;
+  }
   function pageGallery() {
+    const all = allGallery();
+    const cats = [['all', t('galleryAll')]].concat(GALLERY.length ? [['_ours', t('galleryOurs')]] : [],
+      CATEGORIES.filter(c => c.id !== 'all' && all.some(g => g.cat === c.id)).map(c => [c.id, L(c.name)]));
+    const list = galleryList();
     return `<div class="wrap page">
       <nav class="crumbs"><a href="#/">${t('home')}</a><span>/</span><span>${t('galleryTitle')}</span></nav>
       <div class="cat-head"><div><h1>${t('galleryTitle')}</h1><p class="muted">${t('galleryIntro')}</p></div></div>
-      ${GALLERY.length ? `<div class="masonry">${GALLERY.map((g, i) => `<figure class="m-item">
-        <button class="g-item" data-gal="${i}" aria-label="${esc(L(g.caption) || t('photo') + ' ' + (i + 1))}"><img src="${esc(g.image)}" alt="${esc(L(g.caption))}" loading="lazy"></button>
-        ${L(g.caption) ? `<figcaption>${esc(L(g.caption))}</figcaption>` : ''}</figure>`).join('')}</div>` : `<p class="muted">${t('galleryEmpty')}</p>`}
+      ${cats.length > 2 ? `<div class="gal-filter" role="group" aria-label="${t('galleryTitle')}">${cats.map(([k, l]) => `<button class="gf" data-gcat="${esc(k)}" aria-pressed="${galCat === k}">${esc(l)}</button>`).join('')}</div>` : ''}
+      ${list.length ? `<div class="masonry">${list.map((g, i) => `<figure class="m-item" data-reveal style="--d:${(i % 6) * 70}ms">
+        <button class="g-item" data-gal="${i}" aria-label="${esc(g.caption || t('photo') + ' ' + (i + 1))}"><img src="${esc(g.src)}" alt="${esc(g.caption)}" loading="lazy"></button>
+        ${g.caption ? `<figcaption>${g.href ? `<a href="${g.href}">${esc(g.caption)}</a>` : esc(g.caption)}</figcaption>` : ''}</figure>`).join('')}</div>` : `<p class="muted">${t('galleryEmpty')}</p>`}
     </div>`;
   }
-  const galleryItems = () => GALLERY.map(g => ({ src: g.image, caption: L(g.caption), href: g.product && byId(g.product) ? '#/p/' + g.product : '' }));
+  // গ্যালারি = অ্যাডমিনে আপলোড করা ছবি + সব পণ্যের ছবি (নতুন পণ্য যোগ করলে নিজে থেকেই আসে)
+  function allGallery() {
+    const own = GALLERY.map(g => ({ src: g.image, caption: L(g.caption), href: g.product && byId(g.product) ? '#/p/' + g.product : '', cat: '_ours' }));
+    const prod = [];
+    PRODUCTS.forEach(p => p.images.forEach((src, i) => prod.push({ src, caption: L(p.name) + (L(p.color) ? ', ' + L(p.color) : ''), href: '#/p/' + p.id, cat: p.cat, first: i === 0 })));
+    // প্রথমে প্রতিটি পণ্যের মূল ছবি, তারপর বাকি ছবি, যাতে স্লাইডে বৈচিত্র্য থাকে
+    return own.concat(prod.filter(x => x.first), prod.filter(x => !x.first));
+  }
+  let galCat = 'all';
+  const galleryList = () => allGallery().filter(g => galCat === 'all' || g.cat === galCat);
+  const galleryItems = galleryList;
 
   // ---------- lightbox ----------
   let lb = { items: [], i: 0 };
@@ -486,6 +587,7 @@
       $('#trackOut').innerHTML = `<div class="track-card">
         <div class="track-top"><div><strong>${esc(d.orderNo)}</strong><p class="muted small">${t('trackPlaced')} ${when}</p></div><strong>${money(d.total)}</strong></div>
         ${d.status === 'cancelled' ? `<p class="track-cancel">${S.cancelled}</p>` : `<ol class="track-steps">${flow.map((k, i) => `<li class="${i <= at ? 'done' : ''} ${i === at ? 'now' : ''}">${S[k]}</li>`).join('')}</ol>`}
+        ${d.tracking ? `<p class="small"><a class="link" href="https://steadfast.com.bd/t/${encodeURIComponent(d.tracking)}" target="_blank" rel="noopener">Steadfast: ${esc(d.tracking)}</a></p>` : ''}
         <ul class="track-items">${d.items.map(l => `<li>${esc(l.custom ? t('customItem') : l.name)}, ${esc(l.color)}, ${esc(l.custom && l.size === 'Made to measure' ? t('madeToMeasure') : l.size)} × ${l.qty}</li>`).join('')}</ul>
       </div>`;
     });
@@ -589,11 +691,238 @@
     btn.disabled = false;
   });
   document.addEventListener('click', e => {
+    const w = e.target.closest('[data-wish]');
+    if (w) { e.preventDefault(); e.stopPropagation(); toggleWish(w.dataset.wish); return; }
+    const cp = e.target.closest('[data-copy]');
+    if (cp) { (navigator.clipboard ? navigator.clipboard.writeText(cp.dataset.copy) : Promise.reject()).then(() => toast(t('linkCopied'))).catch(() => prompt(t('copyLink'), cp.dataset.copy)); return; }
     if (e.target.closest('[data-chat]')) { e.preventDefault(); openChat(); }
     const g = e.target.closest('[data-gal]');
     if (g) openLightbox(galleryItems(), Number(g.dataset.gal));
   });
   if (chat) { pollChat().then(() => { chatMsgs.length && drawLog(); }); schedule(); }
+
+  // ---------- হিরো ব্যানার স্লাইডার (Admin › Banners) ----------
+  function bannerSlider() {
+    return `<section class="bslider" id="bslider" aria-roledescription="carousel">
+      <div class="bs-track">${BANNERS.map((b, i) => `<div class="bs-slide ${i === 0 ? 'on' : ''}" role="group" aria-roledescription="slide" aria-label="${i + 1} / ${BANNERS.length}" ${i ? 'aria-hidden="true"' : ''}>
+        <img src="${esc(b.image)}" alt="" ${i ? 'loading="lazy"' : 'fetchpriority="high"'}>
+        ${L(b.title) || L(b.text) || L(b.btn) ? `<div class="bs-copy wrap">${L(b.title) ? `<h1>${esc(L(b.title))}</h1>` : ''}${L(b.text) ? `<p>${esc(L(b.text))}</p>` : ''}
+          ${L(b.btn) ? `<a class="btn btn-light" href="${esc(b.link || '#/c/all')}">${esc(L(b.btn))}</a>` : ''}</div>` : ''}
+      </div>`).join('')}</div>
+      ${BANNERS.length > 1 ? `<button class="bs-nav prev" data-bs="-1" aria-label="${t('prev')}">‹</button><button class="bs-nav next" data-bs="1" aria-label="${t('nextPhoto')}">›</button>
+      <div class="bs-dots">${BANNERS.map((_, i) => `<button data-bsgo="${i}" aria-label="${i + 1}" aria-current="${i === 0}"><i></i></button>`).join('')}</div>` : ''}
+    </section>`;
+  }
+  let bsTimer = null;
+  function bindSlider() {
+    clearInterval(bsTimer);
+    const root = $('#bslider'); if (!root || BANNERS.length < 2) return;
+    let i = 0;
+    const show = n => {
+      i = (n + BANNERS.length) % BANNERS.length;
+      root.querySelectorAll('.bs-slide').forEach((s, k) => { s.classList.toggle('on', k === i); s.setAttribute('aria-hidden', k !== i); });
+      root.querySelectorAll('[data-bsgo]').forEach((d, k) => d.setAttribute('aria-current', k === i));
+    };
+    const start = () => { clearInterval(bsTimer); if (!calm.matches) bsTimer = setInterval(() => { if (!document.hidden && document.body.contains(root)) show(i + 1); else if (!document.body.contains(root)) clearInterval(bsTimer); }, 6000); };
+    root.addEventListener('click', e => {
+      const b = e.target.closest('[data-bs]'), g = e.target.closest('[data-bsgo]');
+      if (b) { show(i + Number(b.dataset.bs)); start(); }
+      if (g) { show(Number(g.dataset.bsgo)); start(); }
+    });
+    root.addEventListener('mouseenter', () => clearInterval(bsTimer));
+    root.addEventListener('mouseleave', start);
+    let x0 = null;
+    root.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; }, { passive: true });
+    root.addEventListener('touchend', e => { if (x0 == null) return; const dx = e.changedTouches[0].clientX - x0; if (Math.abs(dx) > 40) { show(i + (dx < 0 ? 1 : -1)); start(); } x0 = null; });
+    start();
+  }
+
+  // ---------- সম্প্রতি দেখা পণ্য ----------
+  function recentBlock(except) {
+    const list = recent.filter(id => id !== except).map(byId).filter(Boolean).slice(0, 4);
+    return list.length ? `<section class="wrap block"><h2 class="block-title">${t('recent')}</h2><div class="grid">${list.map(card).join('')}</div></section>` : '';
+  }
+
+  // ---------- উইশলিস্ট ----------
+  function renderWishCount() { $('#wishCount').textContent = wish.length; $('#wishCount').hidden = !wish.length; }
+  function toggleWish(id) {
+    wish = wish.includes(id) ? wish.filter(x => x !== id) : [id].concat(wish);
+    store.set(WISH_KEY, JSON.stringify(wish));
+    const on = wish.includes(id);
+    document.querySelectorAll(`[data-wish="${CSS.escape(id)}"]`).forEach(b => { b.setAttribute('aria-pressed', on); b.setAttribute('aria-label', on ? t('wishRemove') : t('wishAdd')); });
+    renderWishCount();
+    if (on) { toast(t('wishSaved')); const p = byId(id); if (p) px('AddToWishlist', { content_ids: [id], value: p.price, currency: 'BDT' }); }
+    if (location.hash.startsWith('#/wishlist')) route();
+  }
+  function pageWishlist() {
+    const list = wish.map(byId).filter(Boolean);
+    return `<div class="wrap page"><nav class="crumbs"><a href="#/">${t('home')}</a><span>/</span><span>${t('wishlist')}</span></nav>
+      <div class="cat-head"><h1>${t('wishlist')}</h1>${list.length ? `<span class="muted">${list.length} ${t('items')}</span>` : ''}</div>
+      ${list.length ? `<div class="grid">${list.map(card).join('')}</div>` : `<div class="empty-state"><p class="muted">${t('wishEmpty')}</p><a class="btn btn-dark" href="#/c/all">${t('continueShopping')}</a></div>`}</div>`;
+  }
+
+  // ---------- স্টকে ফিরলে জানানো ----------
+  function notifyForm(p, s) {
+    const box = $('#notifyBox');
+    box.innerHTML = `<form class="notify" id="notifyForm" novalidate><p><strong>${t('notifyTitle', esc(s.label))}</strong><br><span class="muted small">${t('notifyText')}</span></p>
+      <div class="coupon-row"><input name="phone" type="tel" inputmode="numeric" placeholder="01XXXXXXXXX" autocomplete="tel" aria-label="${t('phone')}"><button class="btn btn-dark" type="submit">${t('notifyBtn')}</button></div>
+      <p class="error" hidden></p></form>`;
+    const f = $('#notifyForm'); f.phone.focus();
+    f.addEventListener('submit', async e => {
+      e.preventDefault();
+      const err = f.querySelector('.error'); err.hidden = true;
+      try {
+        const r = await fetch('/api/stock-alert', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: p.id, sizeId: s.id, phone: f.phone.value, lang }) });
+        const d = await r.json(); if (!r.ok) throw new Error(d.message);
+        box.innerHTML = `<p class="notify-done">${t('notifyDone')}</p>`;
+      } catch (x) { err.textContent = x.message && lang === 'en' ? x.message : t('errPhone'); err.hidden = false; }
+    });
+  }
+
+  // ---------- সার্চ ----------
+  const norm = s => String(s || '').toLowerCase();
+  function searchProducts(q) {
+    const words = norm(q).split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+    return PRODUCTS.map(p => {
+      const hay = norm([p.id, p.name.en, p.name.bn, p.color.en, p.color.bn, p.fabric.en, p.fabric.bn, p.desc.en, p.desc.bn, (catOf(p.cat) || { name: {} }).name.en, (catOf(p.cat) || { name: {} }).name.bn].join(' '));
+      const name = norm(p.name.en + ' ' + p.name.bn);
+      const score = words.reduce((s, w) => s + (hay.includes(w) ? (name.includes(w) ? 3 : 1) : -100), 0);
+      return { p, score };
+    }).filter(x => x.score > 0).sort((a, b) => b.score - a.score).map(x => x.p).slice(0, 12);
+  }
+  function drawSearch() {
+    const q = $('#searchInput').value.trim(), out = $('#searchResults');
+    if (!q) { out.innerHTML = `<p class="muted search-hint">${t('searchHint')}</p>`; return; }
+    const list = searchProducts(q);
+    out.innerHTML = list.length ? list.map(p => `<a class="sr" href="#/p/${p.id}" data-close><span class="sr-media">${media(p, 0)}</span>
+      <span class="sr-txt"><strong>${esc(L(p.name))}</strong><small class="muted">${esc(L(p.color))} · ${p.id}</small></span><span class="sr-price">${money(p.price)}</span></a>`).join('')
+      : `<p class="muted search-hint">${t('searchNone', esc(q))}</p>`;
+  }
+  let sTimer;
+  $('#searchOpen').addEventListener('click', () => { $('#searchInput').placeholder = t('searchPh'); drawSearch(); $('#searchDialog').showModal(); $('#searchInput').focus(); });
+  $('#searchInput').addEventListener('input', () => { clearTimeout(sTimer); sTimer = setTimeout(() => { drawSearch(); if ($('#searchInput').value.trim().length > 2) px('Search', { search_string: $('#searchInput').value.trim() }); }, 150); });
+  $('#searchInput').addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); $('#searchDialog').close(); } if (e.key === 'Enter') { const a = $('#searchResults .sr'); if (a) { location.hash = a.getAttribute('href'); $('#searchDialog').close(); } } });
+
+  // ---------- অ্যাকাউন্ট (SMS কোড দিয়ে লগইন) ----------
+  let acct = null, acctPhone = '';
+  async function loadAccount() {
+    try { const r = await fetch('/api/account'); acct = r.ok ? await r.json() : null; } catch (e) { acct = null; }
+    return acct;
+  }
+  function pageAccount() {
+    const head = `<nav class="crumbs"><a href="#/">${t('home')}</a><span>/</span><span>${t('account')}</span></nav>`;
+    if (!FEATURES.otp && !acct) return `<div class="wrap page info">${head}<h1>${t('account')}</h1><p class="muted">${t('loginOff')}</p><p><a class="btn btn-dark" href="#/track">${t('trackNav')}</a></p></div>`;
+    if (!acct) return `<div class="wrap page info">${head}<h1>${t('login')}</h1>
+      <form class="login-box" id="otpForm" novalidate><p class="muted">${t('loginIntro')}</p>
+        <div id="otpStep1" ${acctPhone ? 'hidden' : ''}><label class="field"><span>${t('phone')}</span><input name="phone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="01XXXXXXXXX"></label>
+          <button class="btn btn-dark btn-block" type="submit" data-step="1">${t('sendCode')}</button></div>
+        <div id="otpStep2" ${acctPhone ? '' : 'hidden'}><p class="small" id="otpSent">${acctPhone ? t('codeSent', esc(acctPhone)) : ''}</p>
+          <label class="field"><span>${t('codeLabel')}</span><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="otp-in"></label>
+          <button class="btn btn-dark btn-block" type="submit" data-step="2">${t('verify')}</button>
+          <button class="text-btn" type="button" id="otpBack">${t('changeNumber')}</button></div>
+        <p class="error" id="otpErr" hidden></p></form></div>`;
+    const S = STR[lang].statuses, pr = acct.profile || {};
+    return `<div class="wrap page account">${head}
+      <div class="cat-head"><div><h1>${t('account')}</h1><p class="muted">${esc(acct.phone)}</p></div><button class="btn btn-outline" id="logoutBtn">${t('logout')}</button></div>
+      <div class="acct-grid">
+        <section><h2 class="block-title">${t('myOrders')}</h2>
+          ${acct.orders.length ? acct.orders.map(o => `<article class="acct-order">
+            <div class="ao-top"><strong>${esc(o.orderNo)}</strong><span class="ao-st st-${o.status}">${S[o.status] || o.status}</span></div>
+            <p class="muted small">${new Date(o.createdAt.replace(' ', 'T') + 'Z').toLocaleDateString(lang === 'bn' ? 'bn-BD' : 'en-GB', { day: 'numeric', month: 'long', year: 'numeric' })} · ${money(o.total)}${o.paid ? ' · ' + t('paid') : ''}</p>
+            <ul>${o.items.map(l => `<li>${esc(l.custom ? t('customItem') : l.name)}, ${esc(l.color)}, ${esc(l.custom && l.size === 'Made to measure' ? t('madeToMeasure') : l.size)} × ${l.qty}</li>`).join('')}</ul>
+            <div class="ao-actions">${o.tracking ? `<a class="link" href="https://steadfast.com.bd/t/${encodeURIComponent(o.tracking)}" target="_blank" rel="noopener">Steadfast ${esc(o.tracking)}</a>` : ''}
+              ${o.payment === 'bkash_online' && !o.paid && o.status !== 'cancelled' ? `<button class="btn btn-dark" data-pay="${esc(o.orderNo)}">${t('payNow')}</button>` : ''}
+              ${o.items.some(l => !l.custom && byId(l.code)) ? `<button class="btn btn-outline" data-reorder="${esc(o.orderNo)}">${t('reorder')}</button>` : ''}</div>
+          </article>`).join('') : `<p class="muted">${t('noOrders')}</p>`}
+        </section>
+        <section><h2 class="block-title">${t('myDetails')}</h2>
+          <form id="profileForm" class="profile-form">
+            <label class="field"><span>${t('name')}</span><input name="name" value="${esc(pr.name || '')}" autocomplete="name"></label>
+            <label class="field"><span>${t('address')}</span><textarea name="address" placeholder="${t('addressPh')}">${esc(pr.address || '')}</textarea></label>
+            <fieldset class="options"><legend>${t('area')}</legend>
+              <label class="opt"><input type="radio" name="area" value="inside" ${pr.area !== 'outside' ? 'checked' : ''}><span>${t('inside')}</span></label>
+              <label class="opt"><input type="radio" name="area" value="outside" ${pr.area === 'outside' ? 'checked' : ''}><span>${t('outside')}</span></label></fieldset>
+            <button class="btn btn-dark" type="submit">${t('saveDetails')}</button>
+          </form>
+        </section>
+      </div></div>`;
+  }
+  function bindAccount() {
+    const otp = $('#otpForm');
+    if (otp) {
+      const err = m => { $('#otpErr').textContent = m; $('#otpErr').hidden = !m; };
+      $('#otpBack').addEventListener('click', () => { acctPhone = ''; route(); });
+      otp.addEventListener('submit', async e => {
+        e.preventDefault();
+        const step = acctPhone ? 2 : 1, btn = otp.querySelector(`[data-step="${step}"]`); btn.disabled = true; err('');
+        try {
+          if (step === 1) {
+            const phone = otp.phone.value.replace(/\D/g, '').slice(-11);
+            const r = await fetch('/api/account/otp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone, lang }) });
+            const d = await r.json(); if (!r.ok) throw new Error(d.message);
+            acctPhone = phone; route(); $('#otpForm').code.focus(); return;
+          }
+          const r = await fetch('/api/account/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: acctPhone, code: otp.code.value }) });
+          const d = await r.json(); if (!r.ok) throw new Error(d.message);
+          acctPhone = ''; await loadAccount(); route();
+        } catch (x) { err(x.message && lang === 'en' ? x.message : t('errServer')); btn.disabled = false; }
+      });
+      return;
+    }
+    const lo = $('#logoutBtn');
+    if (!lo) return;
+    lo.addEventListener('click', async () => { await fetch('/api/account/logout', { method: 'POST' }); acct = null; route(); });
+    $('#profileForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = e.target, body = { name: f.name.value, address: f.address.value, area: f.area.value };
+      try { const r = await fetch('/api/account', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); if (!r.ok) throw new Error(); acct.profile = { ...acct.profile, ...body }; toast(t('detailsSaved')); } catch (x) { toast(t('errServer')); }
+    });
+    $('.account').addEventListener('click', e => {
+      const ro = e.target.closest('[data-reorder]'), pay = e.target.closest('[data-pay]');
+      if (pay) startBkash(pay.dataset.pay, acct.phone, pay);
+      if (ro) {
+        const o = acct.orders.find(x => x.orderNo === ro.dataset.reorder);
+        let added = 0;
+        o.items.forEach(l => { const p = byId(l.code); const s = p && p.sizes.find(z => z.label === l.size && z.stock > 0); if (s) { addToCart(s.id, l.qty); added++; } });
+        if (added) { renderCart(); $('#cartDialog').showModal(); } else toast(t('soldOut'));
+      }
+    });
+  }
+
+  // ---------- bKash অনলাইন পেমেন্ট ----------
+  async function startBkash(orderNo, phone, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = t('payGoing'); }
+    try {
+      const r = await fetch('/api/pay/bkash', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ orderNo, phone }) });
+      const d = await r.json(); if (!r.ok) throw new Error(d.message);
+      store.set('alhadaf_pay', JSON.stringify({ orderNo, phone }));
+      location.href = d.url;
+    } catch (x) { toast(x.message || t('errServer')); if (btn) { btn.disabled = false; btn.textContent = t('payRetry'); } }
+  }
+  function pagePay(no, result) {
+    const msg = { success: t('paySuccess'), cancelled: t('payCancelled') }[result] || t('payFailed');
+    let saved = null; try { saved = JSON.parse(store.get('alhadaf_pay') || 'null'); } catch (e) { /* none */ }
+    const canRetry = result !== 'success' && saved && saved.orderNo === no;
+    return `<div class="wrap page info pay-result ${result === 'success' ? 'ok' : 'bad'}">
+      <div class="pay-icon" aria-hidden="true">${result === 'success' ? '✓' : '!'}</div>
+      <h1>${result === 'success' ? t('thanks') : t('payNow')}</h1>
+      ${no ? `<p>${t('orderNo')} <strong>${esc(no)}</strong></p>` : ''}<p class="muted">${msg}</p>
+      <p class="pay-actions">${canRetry ? `<button class="btn btn-dark" id="payRetry">${t('payRetry')}</button>` : ''}<a class="btn btn-outline" href="#/track">${t('trackNav')}</a></p></div>`;
+  }
+
+  // ---------- অসম্পূর্ণ অর্ডার: চেকআউটে নম্বর দিয়ে চলে গেলে অ্যাডমিনে দেখা যায় ----------
+  let abTimer;
+  function captureAbandoned(form) {
+    clearTimeout(abTimer);
+    abTimer = setTimeout(() => {
+      const phone = form.elements.custPhone.value.replace(/\D/g, '').slice(-11);
+      if (!/^01[3-9]\d{8}$/.test(phone) || !cart.length) return;
+      const items = cart.map(i => { const ln = lineOf(i); return { name: ln.name + (ln.sub[0] ? ', ' + ln.sub[0] : ''), size: (i.custom ? (i.custom.size || t('madeToMeasure')) : findSize(i.sizeId).s.label), qty: i.qty, price: ln.price }; });
+      fetch('/api/abandoned', { method: 'POST', headers: { 'content-type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({ phone, name: form.elements.custName.value, address: form.elements.custAddress.value, area: form.elements.area.value, items, lang }) }).catch(() => {});
+    }, 1200);
+  }
 
   // ---------- router ----------
   function route() {
@@ -601,19 +930,51 @@
     const parts = (location.hash.replace(/^#\/?/, '') || '').split('/');
     const view = $('#view');
     let active = '';
-    if (!parts[0]) view.innerHTML = pageHome();
+    if (!parts[0]) { view.innerHTML = pageHome(); bindSlider(); }
     else if (parts[0] === 'c') { active = parts[1]; view.innerHTML = pageCategory(parts[1]); bindCategory(); }
     else if (parts[0] === 'p') { const p = byId(parts[1]); active = p ? p.cat : ''; view.innerHTML = pageProduct(parts[1]); bindProduct(p); }
     else if (parts[0] === 'page') view.innerHTML = pageInfo(parts[1]);
     else if (parts[0] === 'custom') { active = 'custom'; view.innerHTML = pageCustom(); bindCustom(); }
-    else if (parts[0] === 'gallery') { active = 'gallery'; view.innerHTML = pageGallery(); }
+    else if (parts[0] === 'gallery') { active = 'gallery'; view.innerHTML = pageGallery(); bindGallery(); }
     else if (parts[0] === 'track') { view.innerHTML = pageTrack(); bindTrack(); }
+    else if (parts[0] === 'wishlist') view.innerHTML = pageWishlist();
+    else if (parts[0] === 'account') { view.innerHTML = pageAccount(); bindAccount(); }
+    else if (parts[0] === 'pay') {
+      const no = decodeURIComponent(parts[1] || ''), result = parts[2] || 'failed';
+      view.innerHTML = pagePay(no, result);
+      const rb = $('#payRetry'); if (rb) rb.addEventListener('click', () => { const sv = JSON.parse(store.get('alhadaf_pay') || '{}'); startBkash(no, sv.phone, rb); });
+      if (result === 'success') store.set('alhadaf_pay', '');
+    }
     else view.innerHTML = pageNotFound();
     renderNav(active);
     const titleEl = view.querySelector('h1');
     document.title = (parts[0] && titleEl ? titleEl.textContent + ' | ' : '') + 'Al Hadaf';
+    view.classList.remove('view-in'); void view.offsetWidth; view.classList.add('view-in');
+    reveal(view);
+    px('PageView');
   }
-  window.addEventListener('hashchange', () => { route(); window.scrollTo(0, 0); });
+
+  // ---------- স্ক্রল করলে কার্ড আর সেকশন আস্তে আস্তে ভেসে ওঠে ----------
+  const calm = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const io = 'IntersectionObserver' in window ? new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+  }), { rootMargin: '0px 0px -8% 0px', threshold: .08 }) : null;
+  function reveal(root) {
+    const groups = ['.grid', '.tiles', '.trust', '.rv-list'];
+    groups.forEach(sel => root.querySelectorAll(sel).forEach(g => [...g.children].forEach((c, i) => { c.setAttribute('data-reveal', ''); c.style.setProperty('--d', (i % 4) * 80 + 'ms'); })));
+    root.querySelectorAll('.promo, .custom-promo, .block-title').forEach(el => el.setAttribute('data-reveal', ''));
+    root.querySelectorAll('[data-reveal]:not(.in)').forEach(el => (io && !calm.matches ? io.observe(el) : el.classList.add('in')));
+  }
+
+  function bindGallery() {
+    const f = $('.gal-filter'); if (!f) return;
+    f.addEventListener('click', e => {
+      const b = e.target.closest('[data-gcat]'); if (!b) return;
+      galCat = b.dataset.gcat;
+      const y = window.scrollY; route(); window.scrollTo(0, y);
+    });
+  }
+  window.addEventListener('hashchange', () => { document.querySelectorAll('dialog[open]').forEach(d => d.close()); route(); window.scrollTo(0, 0); });
 
   function bindCategory() {
     const sel = $('#sortSel');
@@ -624,6 +985,22 @@
 
   function bindProduct(p) {
     if (!p) return;
+    recent = [p.id].concat(recent.filter(x => x !== p.id)).slice(0, 12); store.set(RECENT_KEY, JSON.stringify(recent));
+    px('ViewContent', { content_ids: [p.id], content_type: 'product', content_name: L(p.name), value: p.price, currency: 'BDT' });
+    const rvOpen = $('#rvOpen'), rvForm = $('#rvForm');
+    rvOpen.addEventListener('click', () => { rvForm.hidden = false; rvOpen.hidden = true; rvForm.querySelector('input').focus(); });
+    rvForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = rvForm, rating = f.rating.value, name = f.name.value.trim();
+      if (!rating || name.length < 2) { $('#rvErr').textContent = t('reviewErr'); $('#rvErr').hidden = false; return; }
+      const btn = f.querySelector('[type=submit]'); btn.disabled = true;
+      try {
+        const r = await fetch('/api/reviews', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: p.id, rating: Number(rating), name, phone: f.phone.value, body: f.body.value }) });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.message);
+        f.outerHTML = `<p class="rv-thanks">${t('reviewThanks')}</p>`;
+      } catch (x) { $('#rvErr').textContent = x.message && lang === 'en' ? x.message : t('chatErr'); $('#rvErr').hidden = false; btn.disabled = false; }
+    });
     const root = $('.pdp');
     let size = p.sizes.length === 1 && p.sizes[0].stock > 0 ? p.sizes[0].id : null;
     const note = () => { const s = p.sizes.find(x => x.id === size); $('#stockNote').textContent = s && s.stock <= 3 ? t('onlyLeft', s.stock) : ''; };
@@ -642,7 +1019,10 @@
         openLightbox(p.images.map(src => ({ src, caption: L(p.name) })), Number($('#galleryMain').dataset.idx) || 0);
         return;
       }
+      const sc = e.target.closest('[data-scroll]');
+      if (sc) { document.getElementById(sc.dataset.scroll).scrollIntoView({ behavior: 'smooth' }); return; }
       const sb = e.target.closest('.size');
+      if (sb && sb.classList.contains('out')) { notifyForm(p, p.sizes.find(x => x.id === Number(sb.dataset.size))); return; }
       if (sb && !sb.disabled) {
         size = Number(sb.dataset.size);
         root.querySelectorAll('.size').forEach(b => b.setAttribute('aria-pressed', b === sb));
@@ -656,13 +1036,14 @@
       if (add || buy) {
         if (!size) { $('#sizeErr').hidden = false; return; }
         addToCart(size, qty);
+        px('AddToCart', { content_ids: [p.id], content_type: 'product', value: p.price * qty, currency: 'BDT' });
         if (buy) openCheckout(); else toast(t('added', L(p.name)));
       }
     });
   }
 
   // ---------- chrome: nav, menu, footer ----------
-  const extraLinks = () => [CUSTOM ? ['custom', t('customNav')] : null, GALLERY.length ? ['gallery', t('galleryNav')] : null].filter(Boolean);
+  const extraLinks = () => [CUSTOM ? ['custom', t('customNav')] : null, allGallery().length ? ['gallery', t('galleryNav')] : null].filter(Boolean);
   function renderNav(active) {
     $('#catNav').innerHTML = `<div class="wrap cat-nav-row">${CATEGORIES.map(c =>
       `<a href="#/c/${c.id}" ${c.id === active ? 'aria-current="page"' : ''}>${esc(L(c.name))}</a>`).join('')}${extraLinks().map(([k, l], i) =>
@@ -698,7 +1079,7 @@
     $('#menuBody').innerHTML = `
       <div class="side-head"><span>${t('menu')}</span><button class="icon-btn" data-close aria-label="${t('close')}">×</button></div>
       <nav class="menu-list">${CATEGORIES.map(c => `<a href="#/c/${c.id}" data-close>${esc(L(c.name))}</a>`).join('')}${extraLinks().map(([k, l]) => `<a href="#/${k}" data-close>${esc(l)}</a>`).join('')}</nav>
-      <nav class="menu-list small"><a href="#/track" data-close>${t('trackNav')}</a>${['size-guide', 'exchange', 'contact'].map(s => `<a href="#/page/${s}" data-close>${STR[lang].pages[s]}</a>`).join('')}</nav>
+      <nav class="menu-list small">${FEATURES.otp ? `<a href="#/account" data-close>${t('account')}</a>` : ''}<a href="#/wishlist" data-close>${t('wishlist')}</a><a href="#/track" data-close>${t('trackNav')}</a>${['size-guide', 'exchange', 'contact'].map(s => `<a href="#/page/${s}" data-close>${STR[lang].pages[s]}</a>`).join('')}</nav>
       ${socialRow('menu-socials')}
       <button class="lang-btn menu-lang" data-lang>${t('langSwitch')}</button>`;
   }
@@ -706,12 +1087,12 @@
     const P = STR[lang].pages, link = s => `<li><a href="#/page/${s}">${P[s]}</a></li>`;
     $('#footer').innerHTML = `<div class="wrap foot-grid">
       <div class="foot-brand">
-        <img src="logo-dark.png" alt="Al Hadaf" width="661" height="357">
+        <img src="/logo-dark.png" alt="Al Hadaf" width="661" height="357">
         <p>${esc(L(SHOP.address))}</p>
         ${socials().length ? `<p class="foot-follow">${t('followUs')}</p>${socialRow('foot-socials')}` : ''}
       </div>
       <div><h3>${t('legal')}</h3><ul>${link('shipping')}${link('exchange')}${link('privacy')}</ul></div>
-      <div><h3>${t('information')}</h3><ul>${link('size-guide')}${link('about')}${GALLERY.length ? `<li><a href="#/gallery">${t('galleryNav')}</a></li>` : ''}${link('contact')}</ul></div>
+      <div><h3>${t('information')}</h3><ul>${link('size-guide')}${link('about')}${allGallery().length ? `<li><a href="#/gallery">${t('galleryNav')}</a></li>` : ''}${link('contact')}</ul></div>
       <div><h3>${t('service')}</h3><ul class="foot-contact">
         <li><a href="tel:${esc(SHOP.phone)}">${icon('phone', 16)}${esc(SHOP.phone)}</a></li>
         ${SHOP.whatsapp ? `<li><a href="${waLink()}" target="_blank" rel="noopener">${icon('whatsapp', 16)}WhatsApp</a></li>` : ''}
@@ -736,13 +1117,22 @@
     if (f) f.qty = Math.min(max, 10, f.qty + qty); else cart.push({ sizeId, qty: Math.min(max, qty) });
     saveCart(); renderCartCount();
   }
+  let coupon = null; // { code, kind, value, min }
   const totals = area => {
     const sub = cart.reduce((s, i) => s + lineOf(i).price * i.qty, 0);
     const del = cart.length ? (area === 'outside' ? SHOP.deliveryOutside : SHOP.deliveryInside) : 0;
-    return { sub, del, total: sub + del };
+    const qty = cart.reduce((s, i) => s + i.qty, 0);
+    const bundle = SHOP.bundleMin >= 2 && SHOP.bundlePct && qty >= SHOP.bundleMin ? Math.round(sub * SHOP.bundlePct / 100) : 0;
+    const base = sub - bundle;
+    let off = 0;
+    if (coupon && base >= coupon.min) off = coupon.kind === 'percent' ? Math.round(base * Math.min(90, coupon.value) / 100) : coupon.kind === 'fixed' ? Math.min(base, coupon.value) : del;
+    return { sub, del, off, bundle, qty, total: Math.max(0, sub + del - off - bundle) };
   };
+  let lastCount = null;
   function renderCartCount() {
     const n = cart.reduce((s, i) => s + i.qty, 0);
+    if (lastCount != null && n > lastCount) { const b = $('#cartOpen'); b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump'); }
+    lastCount = n;
     $('#cartCount').textContent = n;
     $('#cartCount').hidden = n === 0;
   }
@@ -769,6 +1159,8 @@
     }).join('')}</div>
     <div class="cart-foot">
       <p class="row"><span>${t('subtotal')}</span><strong>${money(totals().sub)}</strong></p>
+      ${totals().bundle ? `<p class="row disc"><span>${t('bundleOff', SHOP.bundlePct)}</span><span>−${money(totals().bundle)}</span></p>`
+        : SHOP.bundleMin >= 2 && SHOP.bundlePct ? `<p class="bundle-note sm">${t('bundleMore', SHOP.bundleMin - totals().qty, SHOP.bundlePct)}</p>` : ''}
       <p class="muted small">${t('deliveryLater')}</p>
       <button class="btn btn-dark btn-block" id="toCheckout">${t('checkout')}</button>
     </div>`;
@@ -803,11 +1195,17 @@
         </fieldset>
         <fieldset class="options"><legend>${t('payment')}</legend>
           <label class="opt"><input type="radio" name="payment" value="cod" checked><span>${t('cod')}<small>${t('codNote')}</small></span></label>
+          ${FEATURES.bkashPay ? `<label class="opt"><input type="radio" name="payment" value="bkash_online"><span>${t('payOnline')}<small>${t('payOnlineNote')}</small></span></label>` : ''}
           <label class="opt"><input type="radio" name="payment" value="bkash"><span>${t('bkash')}<small>${t('bkashNote')}</small></span></label>
         </fieldset>
         <div class="bkash-box" id="bkashBox" hidden><p id="bkashText"></p>
           <label class="field"><span>${t('trx')}</span><input name="trx" autocomplete="off"></label></div>
         <label class="field"><span>${t('note')}</span><textarea name="note" placeholder="${t('notePh')}"></textarea></label>
+        <div class="coupon-box">
+          <label class="field"><span>${t('coupon')}</span>
+          <span class="coupon-row"><input name="coupon" placeholder="${t('couponPh')}" autocomplete="off" value="${coupon ? esc(coupon.code) : ''}" ${coupon ? 'readonly' : ''}><button type="button" class="btn btn-outline" id="couponBtn">${coupon ? t('couponRemove') : t('couponApply')}</button></span></label>
+          <p class="small" id="couponMsg" ${coupon ? '' : 'hidden'}>${coupon ? t('couponOk', esc(coupon.code)) : ''}</p>
+        </div>
         <div class="summary" id="coSummary"></div>
         <p class="error" id="coErr" hidden></p>
         <button class="btn btn-dark btn-block" type="submit">${t('confirm')}</button>
@@ -817,6 +1215,8 @@
       const tt = totals(form.elements.area.value);
       $('#coSummary').innerHTML = `<p class="row"><span>${t('subtotal')}</span><span>${money(tt.sub)}</span></p>
         <p class="row"><span>${t('deliveryCharge')}</span><span>${money(tt.del)}</span></p>
+        ${tt.bundle ? `<p class="row disc"><span>${t('bundleOff', SHOP.bundlePct)}</span><span>−${money(tt.bundle)}</span></p>` : ''}
+        ${tt.off ? `<p class="row disc"><span>${coupon.kind === 'free_ship' ? t('freeShip') : t('discount')} (${esc(coupon.code)})</span><span>−${money(tt.off)}</span></p>` : ''}
         <p class="row total"><span>${t('total')}</span><span>${money(tt.total)}</span></p>`;
       const bk = form.elements.payment.value === 'bkash';
       $('#bkashBox').hidden = !bk;
@@ -824,7 +1224,31 @@
     };
     form.addEventListener('change', update);
     form.addEventListener('submit', e => { e.preventDefault(); submitOrder(form); });
+    form.addEventListener('input', e => { if (['custPhone', 'custName', 'custAddress'].includes(e.target.name)) captureAbandoned(form); });
+    if (acct) {
+      const pr = acct.profile || {};
+      form.elements.custPhone.value = acct.phone;
+      if (pr.name) form.elements.custName.value = pr.name;
+      if (pr.address) form.elements.custAddress.value = pr.address;
+      if (pr.area === 'outside') form.elements.area.value = 'outside';
+    }
+    const cMsg = (m, bad) => { const el = $('#couponMsg'); el.innerHTML = m; el.hidden = !m; el.className = 'small ' + (bad ? 'error' : 'ok'); };
+    $('#couponBtn').addEventListener('click', async () => {
+      const inp = form.elements.coupon, btn = $('#couponBtn');
+      if (coupon) { coupon = null; inp.readOnly = false; inp.value = ''; btn.textContent = t('couponApply'); cMsg(''); update(); return; }
+      const code = inp.value.trim(); if (!code) return;
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/coupon?' + new URLSearchParams({ code, subtotal: totals().sub }));
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.message);
+        coupon = { code: d.code, kind: d.kind, value: d.value, min: 0 };
+        inp.value = d.code; inp.readOnly = true; btn.textContent = t('couponRemove'); cMsg(t('couponOk', esc(d.code)));
+      } catch (x) { cMsg(esc(x.message || t('errServer')), true); }
+      btn.disabled = false; update();
+    });
     update();
+    px('InitiateCheckout', { value: totals().sub, currency: 'BDT', num_items: cart.reduce((s, i) => s + i.qty, 0) });
     $('#checkoutDialog').showModal();
   }
 
@@ -846,7 +1270,7 @@
     try {
       res = await fetch('/api/orders', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name, phone, address, area, payment: pay, trx, note, lang, items: cart.map(i => i.custom ? { custom: i.custom, qty: i.qty } : { sizeId: i.sizeId, qty: i.qty }) })
+        body: JSON.stringify({ name, phone, address, area, payment: pay, trx, note, lang, coupon: coupon ? coupon.code : '', items: cart.map(i => i.custom ? { custom: i.custom, qty: i.qty } : { sizeId: i.sizeId, qty: i.qty }) })
       });
       data = await res.json();
     } catch (e) { data = null; }
@@ -867,10 +1291,19 @@
     $('#checkoutBody').innerHTML = `<button class="icon-btn dlg-x" data-close aria-label="${t('close')}">×</button>
       <div class="success"><h2>${t('thanks')}</h2><p>${t('orderNo')} <strong>${data.orderNo}</strong></p>
       <p class="row total"><span>${t('total')}</span><span>${money(data.total)}</span></p>
+      ${data.discount ? `<p class="row disc"><span>${t('discount')}</span><span>−${money(data.discount)}</span></p>` : ''}
+      ${data.bundleOff ? `<p class="row disc"><span>${t('bundleOff', SHOP.bundlePct)}</span><span>−${money(data.bundleOff)}</span></p>` : ''}
       <p class="muted">${t('thanksText')}</p>
       <p class="muted small">${t('trackLater')}</p>
       ${SHOP.whatsapp ? `<a class="btn btn-outline btn-block" href="${waLink(msg)}" target="_blank" rel="noopener">${t('alsoWa')}</a>` : ''}</div>`;
-    cart = []; saveCart(); renderCartCount();
+    px('Purchase', { value: data.total, currency: 'BDT', content_ids: data.items.map(l => l.code), content_type: 'product' });
+    cart = []; coupon = null; saveCart(); renderCartCount();
+    if (data.payment === 'bkash_online') {
+      $('#checkoutBody').querySelector('.success').insertAdjacentHTML('beforeend', `<button class="btn btn-dark btn-block" id="payBtn">${t('payNow')}</button>`);
+      const pb = $('#payBtn'); pb.addEventListener('click', () => startBkash(data.orderNo, phone, pb));
+      startBkash(data.orderNo, phone, pb);
+      return;
+    }
     refresh();
   }
 
@@ -908,13 +1341,18 @@
     $('#menuOpen').setAttribute('aria-label', t('menu'));
     $('#cartOpen').setAttribute('aria-label', t('cartTitle'));
     $('#chatFab').setAttribute('aria-label', t('chatTitle'));
+    $('#searchOpen').setAttribute('aria-label', t('search'));
+    $('#wishLink').setAttribute('aria-label', t('wishlist'));
+    $('#accountLink').setAttribute('aria-label', t('account'));
+    $('#accountLink').hidden = !FEATURES.otp;
+    renderWishCount();
     if (!$('#chatPanel').hidden) renderChat();
     renderFooter(); renderCartCount();
   }
 
   applyChrome();
   route();
-  loadStore().then(() => { applyChrome(); route(); }).catch(() => {
+  loadStore().then(async () => { applyChrome(); if (FEATURES.otp) await loadAccount(); route(); }).catch(() => {
     $('#view').innerHTML = `<div class="wrap page"><p class="muted">${t('errServer')}</p></div>`;
   });
 })();

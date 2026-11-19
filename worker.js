@@ -93,13 +93,21 @@ const MIGRATIONS = [
   `ALTER TABLE orders ADD COLUMN courier_status TEXT DEFAULT ''`,
   `ALTER TABLE orders ADD COLUMN bundle_off INTEGER DEFAULT 0`,
   `ALTER TABLE orders ADD COLUMN paid INTEGER DEFAULT 0`,
-  `ALTER TABLE orders ADD COLUMN pay_id TEXT DEFAULT ''`
+  `ALTER TABLE orders ADD COLUMN pay_id TEXT DEFAULT ''`,
+  `ALTER TABLE fabrics ADD COLUMN color_en TEXT DEFAULT ''`,
+  `ALTER TABLE fabrics ADD COLUMN color_bn TEXT DEFAULT ''`,
+  `ALTER TABLE fabrics ADD COLUMN family TEXT DEFAULT ''`,
+  `ALTER TABLE fabrics ADD COLUMN composition TEXT DEFAULT ''`,
+  `ALTER TABLE fabrics ADD COLUMN origin TEXT DEFAULT ''`,
+  `ALTER TABLE fabrics ADD COLUMN season TEXT DEFAULT ''`,
+  `ALTER TABLE fabrics ADD COLUMN stock REAL`,
+  `ALTER TABLE fabrics ADD COLUMN per_thobe REAL DEFAULT 3.5`
 ];
 
 const DEFAULT_SHOP = {
   phone: '01700000000', whatsapp: '8801700000000', email: '', bkash: '01700000000',
   facebook: '', instagram: '', messenger: '', youtube: '', tiktok: '', fb_pixel: '',
-  sms_new: '1', sms_confirmed: '1', sms_shipped: '1', sms_delivered: '', bundle_min: 0, bundle_pct: 0,
+  sms_new: '1', sms_confirmed: '1', sms_shipped: '1', sms_delivered: '', bundle_min: 0, bundle_pct: 0, free_ship_over: 0,
   address_en: 'Dhaka, Bangladesh', address_bn: 'ঢাকা, বাংলাদেশ',
   delivery_inside: 70, delivery_outside: 130,
   announce_en: 'Cash on delivery all over Bangladesh. Easy size exchange within 7 days.',
@@ -369,7 +377,7 @@ async function getStore(env) {
     D.prepare('SELECT * FROM products WHERE active = 1 ORDER BY sort, id DESC').all(),
     D.prepare('SELECT s.id, s.product_id, s.label, s.stock FROM product_sizes s JOIN products p ON p.id = s.product_id WHERE p.active = 1 ORDER BY s.sort, s.id').all(),
     getCustom(env),
-    D.prepare('SELECT * FROM fabrics WHERE active = 1 ORDER BY sort, id').all(),
+    D.prepare('SELECT * FROM fabrics WHERE active = 1 AND (stock IS NULL OR stock >= per_thobe) ORDER BY sort, id').all(),
     D.prepare('SELECT * FROM gallery ORDER BY sort, id DESC LIMIT 200').all(),
     D.prepare("SELECT product_code, name, rating, body, verified, created_at FROM reviews WHERE status = 'approved' ORDER BY id DESC LIMIT 800").all(),
     D.prepare('SELECT * FROM banners WHERE active = 1 ORDER BY sort, id').all()
@@ -399,7 +407,9 @@ async function getStore(env) {
     custom: custom.enabled ? {
       basePrice: custom.base_price, leadDays: custom.lead_days, sizes: custom.sizes,
       groups: custom.groups.map(g => ({ key: g.key, name: { en: g.name_en, bn: g.name_bn }, options: g.options.map(o => ({ name: { en: o.en, bn: o.bn }, add: o.add })) })),
-      fabrics: fabrics.results.map(f => ({ id: f.id, name: { en: f.name_en, bn: f.name_bn }, desc: { en: f.desc_en, bn: f.desc_bn }, add: f.price_add, hex: f.color_hex, gsm: f.gsm, image: f.image ? '/img/' + f.image : '' }))
+      fabrics: fabrics.results.map(f => ({ id: f.id, name: { en: f.name_en, bn: f.name_bn }, desc: { en: f.desc_en, bn: f.desc_bn }, add: f.price_add, hex: f.color_hex, gsm: f.gsm, image: f.image ? '/img/' + f.image : '',
+        color: { en: f.color_en || '', bn: f.color_bn || f.color_en || '' }, family: f.family || '', composition: f.composition || '', origin: f.origin || '', season: f.season || '',
+        left: f.stock == null ? null : Math.floor(f.stock / (f.per_thobe || 3.5)) }))
     } : null,
     gallery: gallery.results.map(g => ({ id: g.id, image: '/img/' + g.image, caption: { en: g.caption_en, bn: g.caption_bn }, product: g.product_code || '' })),
     banners: banners.results.map(b => ({ image: '/img/' + b.image, title: { en: b.title_en, bn: b.title_bn }, text: { en: b.text_en, bn: b.text_bn }, btn: { en: b.btn_en, bn: b.btn_bn }, link: b.link })),
@@ -439,6 +449,17 @@ async function createOrder(req, env, ctx) {
     }
   }
 
+  // নিজের মাপের জুব্বার কাপড় স্টক থেকে কমানো (স্টক রাখা হলে)
+  const fabricUndo = [];
+  for (const l of customLines) {
+    const need = l.details.perThobe * l.qty;
+    const r = await D.prepare('UPDATE fabrics SET stock = stock - ? WHERE id = ? AND (stock IS NULL OR stock >= ?)').bind(need, l.details.fabricId, need).run();
+    if (!r.meta.changes) {
+      if (fabricUndo.length) await D.batch(fabricUndo);
+      return bad(`Sorry, we do not have enough ${l.details.fabric} fabric left. Please choose another fabric.`, 409);
+    }
+    fabricUndo.push(D.prepare('UPDATE fabrics SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL').bind(need, l.details.fabricId));
+  }
   const lineItems = [], short = [];
   if (items.length) {
     const ids = [...new Set(items.map(i => i.sizeId))];
@@ -451,14 +472,14 @@ async function createOrder(req, env, ctx) {
       if (r.stock < it.qty) short.push({ sizeId: it.sizeId, available: r.stock, code: r.code, size: r.label });
       lineItems.push({ sizeId: r.id, productId: r.pid, code: r.code, name: r.name_en, color: r.color_en, size: r.label, qty: it.qty, price: r.price });
     }
-    if (short.length) return json({ error: 'stock', message: 'Some items are out of stock.', short }, 409);
+    if (short.length) { if (fabricUndo.length) await D.batch(fabricUndo); return json({ error: 'stock', message: 'Some items are out of stock.', short }, 409); }
 
     // কমানো হবে শুধু যদি স্টক যথেষ্ট থাকে; কোনোটা ব্যর্থ হলে আগেরগুলো ফেরত দেওয়া হয়
     const res = await D.batch(lineItems.map(l => D.prepare('UPDATE product_sizes SET stock = stock - ? WHERE id = ? AND stock >= ?').bind(l.qty, l.sizeId, l.qty)));
     const failed = res.some(r => !r.meta.changes);
     if (failed) {
       const undo = lineItems.filter((l, i) => res[i].meta.changes).map(l => D.prepare('UPDATE product_sizes SET stock = stock + ? WHERE id = ?').bind(l.qty, l.sizeId));
-      if (undo.length) await D.batch(undo);
+      if (undo.length || fabricUndo.length) await D.batch(undo.concat(fabricUndo));
       return json({ error: 'stock', message: 'Some items just sold out.', short: [] }, 409);
     }
   }
@@ -468,6 +489,7 @@ async function createOrder(req, env, ctx) {
   const subtotal = lineItems.reduce((s, l) => s + l.price * l.qty, 0);
   let delivery = area === 'outside' ? int(shop.delivery_outside) : int(shop.delivery_inside);
   const bundleOff = bundleDiscount(shop, lineItems.reduce((s, l) => s + l.qty, 0), subtotal);
+  if (int(shop.free_ship_over) > 0 && subtotal - bundleOff >= int(shop.free_ship_over)) delivery = 0;
   let discount = 0, couponCode = '';
   if (str(b.coupon, 30)) {
     const c = await findCoupon(env, b.coupon, subtotal - bundleOff);
@@ -519,7 +541,7 @@ function buildCustomLine(c, qty, cfg, fabrics) {
   }
   return {
     custom: true, code: 'CUSTOM', name: 'Custom thobe', color: fab.name_en, size, qty, price,
-    details: { fabric: fab.name_en, fabricBn: fab.name_bn, fabricId: fab.id, options: chosen, fit, meas, note: str(c.note, 300) }
+    details: { fabric: fab.name_en + (fab.color_en ? ', ' + fab.color_en : ''), fabricBn: fab.name_bn, fabricId: fab.id, perThobe: fab.per_thobe || 3.5, options: chosen, fit, meas, note: str(c.note, 300) }
   };
 }
 
@@ -749,10 +771,15 @@ async function updateOrder(req, env, id, ctx) {
   const items = JSON.parse(o.items || '[]').filter(l => l.sizeId);
   const ops = [env.DB.prepare('UPDATE orders SET status = ? WHERE id = ?').bind(b.status, id)];
   // বাতিল করলে স্টক ফেরত যায়; আবার চালু করলে স্টক আবার কমে (নিজের মাপের জুব্বার স্টক নেই)
-  if (b.status === 'cancelled' && o.status !== 'cancelled')
+  const fab = JSON.parse(o.items || '[]').filter(l => l.custom && l.details && l.details.fabricId && l.details.perThobe);
+  if (b.status === 'cancelled' && o.status !== 'cancelled') {
     items.forEach(l => ops.push(env.DB.prepare('UPDATE product_sizes SET stock = stock + ? WHERE id = ?').bind(l.qty, l.sizeId)));
-  if (o.status === 'cancelled' && b.status !== 'cancelled')
+    fab.forEach(l => ops.push(env.DB.prepare('UPDATE fabrics SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL').bind(l.details.perThobe * l.qty, l.details.fabricId)));
+  }
+  if (o.status === 'cancelled' && b.status !== 'cancelled') {
     items.forEach(l => ops.push(env.DB.prepare('UPDATE product_sizes SET stock = MAX(0, stock - ?) WHERE id = ?').bind(l.qty, l.sizeId)));
+    fab.forEach(l => ops.push(env.DB.prepare('UPDATE fabrics SET stock = MAX(0, stock - ?) WHERE id = ? AND stock IS NOT NULL').bind(l.details.perThobe * l.qty, l.details.fabricId)));
+  }
   await env.DB.batch(ops);
   if (b.status !== o.status) await orderSms(env, ctx, o, b.status);
   return json({ ok: true });
@@ -763,8 +790,11 @@ async function deleteOrder(env, id) {
   if (!o) return bad('Order not found.', 404);
   const ops = [env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(id)];
   // এখনো পাঠানো হয়নি এমন অর্ডার মুছলে স্টক ফেরত যায়
-  if (o.status === 'new' || o.status === 'confirmed')
-    JSON.parse(o.items || '[]').filter(l => l.sizeId).forEach(l => ops.push(env.DB.prepare('UPDATE product_sizes SET stock = stock + ? WHERE id = ?').bind(l.qty, l.sizeId)));
+  if (o.status === 'new' || o.status === 'confirmed') {
+    const all = JSON.parse(o.items || '[]');
+    all.filter(l => l.sizeId).forEach(l => ops.push(env.DB.prepare('UPDATE product_sizes SET stock = stock + ? WHERE id = ?').bind(l.qty, l.sizeId)));
+    all.filter(l => l.custom && l.details && l.details.fabricId && l.details.perThobe).forEach(l => ops.push(env.DB.prepare('UPDATE fabrics SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL').bind(l.details.perThobe * l.qty, l.details.fabricId)));
+  }
   if (o.coupon) ops.push(env.DB.prepare('UPDATE coupons SET used = MAX(0, used - 1) WHERE code = ?').bind(o.coupon));
   await env.DB.batch(ops);
   return json({ ok: true });
@@ -907,7 +937,10 @@ async function saveFabric(req, env, id) {
   const f = {
     name_en: nameEn, name_bn: str(b.name_bn, 80), desc_en: str(b.desc_en, 400), desc_bn: str(b.desc_bn, 400),
     price_add: Math.max(0, int(b.price_add)), color_hex: /^#[0-9a-fA-F]{6}$/.test(b.color_hex || '') ? b.color_hex : '#F2F0EA',
-    image: imgKey(b.image), gsm: intOrNull(b.gsm), active: b.active ? 1 : 0, sort: int(b.sort)
+    image: imgKey(b.image), gsm: intOrNull(b.gsm), active: b.active ? 1 : 0, sort: int(b.sort),
+    color_en: str(b.color_en, 40), color_bn: str(b.color_bn, 40), family: str(b.family, 20), composition: str(b.composition, 80), origin: str(b.origin, 40), season: str(b.season, 40),
+    stock: b.stock === '' || b.stock == null ? null : Math.max(0, Math.round(Number(b.stock) * 100) / 100) || 0,
+    per_thobe: Math.min(10, Math.max(0.5, Number(b.per_thobe) || 3.5))
   };
   const keys = Object.keys(f);
   if (id) {
@@ -1021,6 +1054,7 @@ async function adminStats(env) {
     D.prepare(`SELECT items FROM orders WHERE status != 'cancelled' AND created_at > datetime('now', '-30 days') LIMIT 3000`).all(),
     D.prepare(`SELECT COUNT(*) AS n FROM orders WHERE status IN ('new', 'confirmed') AND items LIKE '%"custom":true%'`).first()
   ]);
+  const lowFabrics = (await D.prepare('SELECT id, name_en, color_en, stock, per_thobe FROM fabrics WHERE active = 1 AND stock IS NOT NULL AND stock < per_thobe * 3 ORDER BY stock').all()).results;
   const top = {};
   for (const o of monthItems.results) {
     for (const l of JSON.parse(o.items || '[]')) {
@@ -1032,7 +1066,7 @@ async function adminStats(env) {
   return json({
     today: t, yesterday: y, week: w, month: m, all,
     daily: daily.results, statuses: Object.fromEntries(statuses.results.map(s => [s.status, s.n])),
-    recent: recent.results, lowStock: low.results, unreadChats: chats.n, customers: customers.n, customOpen: customOpen.n,
+    recent: recent.results, lowStock: low.results, lowFabrics, unreadChats: chats.n, customers: customers.n, customOpen: customOpen.n,
     top: Object.values(top).sort((a, b) => b.qty - a.qty).slice(0, 6)
   });
 }

@@ -43,7 +43,7 @@
       messenger: s.messenger || '', youtube: s.youtube || '', tiktok: s.tiktok || '', fbPixel: String(s.fb_pixel || '').replace(/\D/g, ''),
       address: { en: s.address_en, bn: s.address_bn }, announce: { en: s.announce_en, bn: s.announce_bn },
       deliveryInside: Number(s.delivery_inside) || 0, deliveryOutside: Number(s.delivery_outside) || 0,
-      bundleMin: Number(s.bundle_min) || 0, bundlePct: Number(s.bundle_pct) || 0
+      bundleMin: Number(s.bundle_min) || 0, bundlePct: Number(s.bundle_pct) || 0, freeShipOver: Number(s.free_ship_over) || 0
     };
     CATEGORIES = [{ id: 'all', name: { en: 'All', bn: 'সব' } }, ...d.categories];
     PRODUCTS = d.products.map(p => ({ ...p, shape: PLACEHOLDER[p.cat] || 'thobe' }));
@@ -106,7 +106,7 @@
       return {
         name: t('customItem'), price: customPrice(c).unit, max: 5, href: '#/custom',
         media: `<div class="ph">${art({ shape: 'thobe', color: { hex: f.hex } })}</div>`,
-        sub: [L(f.name), CUSTOM.groups.map(g => optName(g, c)).join(', '), c.fit === 'standard' ? t('sizeIs', esc(c.size)) : t('madeToMeasure')]
+        sub: [L(f.name) + (L(f.color) ? ', ' + L(f.color) : ''), CUSTOM.groups.map(g => optName(g, c)).join(', '), c.fit === 'standard' ? t('sizeIs', esc(c.size)) : t('madeToMeasure')]
       };
     }
     const { p, s } = findSize(i.sizeId);
@@ -368,6 +368,7 @@
             <button class="btn btn-outline" id="addBtn">${t('addToCart')}</button>
           </div>
           <button class="btn btn-dark btn-block" id="buyBtn">${t('buyNow')}</button>
+          ${deliveryEta()}
           <div class="pdp-links">
             <a class="link wa-ask" target="_blank" rel="noopener" href="${waLink(`${L(p.name)} (${p.id}), ${L(p.color)}`)}">${icon('whatsapp', 16)}${t('orderWa')}</a>
             <button class="link link-btn" data-chat>${icon('chat', 16)}${t('chatTitle')}</button>
@@ -392,6 +393,15 @@
       ${recentBlock(p.id)}
       ${rel.length ? `<section class="block"><h2 class="block-title">${t('related')}</h2><div class="grid">${rel.map(p => card(p)).join('')}</div></section>` : ''}
     </div>`;
+  }
+
+  // ডেলিভারির আনুমানিক তারিখ (শুক্রবার বাদে): ঢাকায় ১–২ দিন, বাইরে ২–৪ দিন
+  function deliveryEta() {
+    const add = n => { const d = new Date(Date.now() + 6 * 3600e3); let k = 0; while (k < n) { d.setUTCDate(d.getUTCDate() + 1); if (d.getUTCDay() !== 5) k++; } return d; };
+    const f = d => d.toLocaleDateString(lang === 'bn' ? 'bn-BD' : 'en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+    const truck = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h11v10H3zM14 9h4l3 3.5V16h-7"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/></svg>';
+    return `<div class="eta">${truck}<div><p>${t('arrives', f(add(1)), f(add(2)))} <span class="muted">(${t('insideDhaka')})</span></p>
+      <p class="muted small">${t('outside')}: ${f(add(2))} – ${f(add(4))}</p></div></div>`;
   }
 
   function reviewsBlock(p) {
@@ -466,11 +476,18 @@
       <button type="button" class="cu-step-head" data-goto="${n}" aria-expanded="${cu.step === n}"><span class="cu-num">${n}</span><span class="cu-title">${title}</span><span class="cu-val" id="cuVal${n}"></span></button>
       <div class="cu-body">${body}</div></section>`;
     const nav = (n, last) => `<div class="cu-nav">${n > 1 ? `<button type="button" class="btn btn-outline" data-goto="${n - 1}">${t('back')}</button>` : '<span></span>'}${last ? '' : `<button type="button" class="btn btn-dark" data-next="${n}">${t('next')}</button>`}</div>`;
-    const fabrics = CUSTOM.fabrics.map(f => `<label class="fab">
-      <input type="radio" name="fabric" value="${f.id}" ${cu.fabric === f.id ? 'checked' : ''}>
-      <span class="fab-sw" style="--sw:${esc(f.hex)}">${f.image ? `<img src="${esc(f.image)}" alt="" loading="lazy">` : ''}</span>
-      <span class="fab-txt"><strong>${esc(L(f.name))}</strong>${L(f.desc) ? `<small>${esc(L(f.desc))}</small>` : ''}${f.gsm ? `<small>GSM ${f.gsm}</small>` : ''}</span>
-      <span class="fab-price">${f.add ? '+' + money(f.add) : ''}</span></label>`).join('');
+    const fams = [...new Set(CUSTOM.fabrics.map(f => f.family).filter(Boolean))];
+    const fabrics = (fams.length > 1 ? `<div class="fam-chips" role="group">${['all'].concat(fams).map(k => `<button type="button" class="fam" data-fam="${k}" aria-pressed="${(cu.fam || 'all') === k}">${k === 'all' ? t('famAll') : `<i style="--sw:${esc((CUSTOM.fabrics.find(f => f.family === k) || {}).hex || '#ccc')}"></i>${STR[lang].fam[k] || k}`}</button>`).join('')}</div>` : '')
+      + `<div class="fab-cards">${CUSTOM.fabrics.map((f, i) => `<label class="fcard" data-family="${esc(f.family)}" ${cu.fam && cu.fam !== 'all' && f.family !== cu.fam ? 'hidden' : ''}>
+        <input type="radio" name="fabric" value="${f.id}" ${cu.fabric === f.id ? 'checked' : ''}>
+        <span class="fc-img" style="--sw:${esc(f.hex)}">${f.image ? `<img src="${esc(f.image)}" alt="" loading="lazy">` : ''}
+          ${f.image ? `<button type="button" class="fc-zoom" data-fzoom="${i}" aria-label="${t('zoomFabric')}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4M11 8v6M8 11h6"/></svg></button>` : ''}
+          ${f.left != null && f.left < 5 ? `<em class="fc-few">${t('fewLeft', f.left)}</em>` : ''}<span class="fc-check" aria-hidden="true"></span></span>
+        <span class="fc-txt"><strong>${esc(L(f.name))}</strong>
+          <span class="fc-color"><i style="--sw:${esc(f.hex)}"></i>${esc(L(f.color) || '')}</span>
+          ${[f.composition, f.origin, f.gsm ? 'GSM ' + f.gsm : '', f.season].filter(Boolean).length ? `<small>${esc([f.composition, f.origin, f.gsm ? 'GSM ' + f.gsm : '', f.season].filter(Boolean).join(' · '))}</small>` : ''}
+          ${L(f.desc) ? `<small>${esc(L(f.desc))}</small>` : ''}
+          <b class="fc-price">${f.add ? '+' + money(f.add) : '&nbsp;'}</b></span></label>`).join('')}</div>`;
     const groups = CUSTOM.groups.map(g => `<fieldset class="cu-group"><legend>${esc(L(g.name))}</legend><div class="chip-opts">${g.options.map((o, i) =>
       `<label class="chip-opt"><input type="radio" name="opt-${esc(g.key)}" value="${i}" ${cu.opts[g.key] === i ? 'checked' : ''}><span>${esc(L(o.name))}${o.add ? ` <small>+${money(o.add)}</small>` : ''}</span></label>`).join('')}</div></fieldset>`).join('');
     const M = STR[lang].meas, H = STR[lang].measHelp;
@@ -530,10 +547,10 @@
     if (!form) return;
     const draw = () => {
       const f = fabricOf(cu.fabric), pr = customPrice(cu);
-      $('#cuArt').innerHTML = `<div class="ph">${art({ shape: 'thobe', color: { hex: f.hex } })}</div>`;
+      $('#cuArt').innerHTML = `<div class="ph">${art({ shape: 'thobe', color: { hex: f.hex } })}</div>${f.image ? `<span class="cu-swatch"><img src="${esc(f.image)}" alt=""></span>` : ''}`;
       const sizeTxt = cu.fit === 'standard' ? (cu.size ? t('sizeIs', esc(cu.size)) : '—') : t('madeToMeasure');
       $('#cuSum').innerHTML = `<h3>${t('customItem')}</h3>
-        <dl><dt>${t('fabricL')}</dt><dd>${esc(L(f.name))}</dd>
+        <dl><dt>${t('fabricL')}</dt><dd>${esc(L(f.name))}${L(f.color) ? ', ' + esc(L(f.color)) : ''}</dd>
         ${CUSTOM.groups.map(g => `<dt>${esc(L(g.name))}</dt><dd>${esc(optName(g, cu))}</dd>`).join('')}
         <dt>${t('size')}</dt><dd>${sizeTxt}</dd></dl>
         <p class="row"><span>${t('tailoring')}</span><span>${money(pr.base)}</span></p>
@@ -570,6 +587,10 @@
       if (n === 'note') cu.note = e.target.value;
     });
     form.addEventListener('click', e => {
+      const fz = e.target.closest('[data-fzoom]');
+      if (fz) { e.preventDefault(); openLightbox(CUSTOM.fabrics.filter(f => f.image).map(f => ({ src: f.image, caption: L(f.name) + (L(f.color) ? ', ' + L(f.color) : '') })), CUSTOM.fabrics.filter(f => f.image).indexOf(CUSTOM.fabrics[Number(fz.dataset.fzoom)])); return; }
+      const fm = e.target.closest('[data-fam]');
+      if (fm) { cu.fam = fm.dataset.fam; form.querySelectorAll('[data-fam]').forEach(b => b.setAttribute('aria-pressed', b === fm)); form.querySelectorAll('.fcard').forEach(c => { c.hidden = cu.fam !== 'all' && c.dataset.family !== cu.fam; }); return; }
       const g = e.target.closest('[data-goto]');
       if (g) { open(Number(g.dataset.goto)); return; }
       const nx = e.target.closest('[data-next]');
@@ -1040,8 +1061,9 @@
 
   // ---------- router ----------
   function route() {
-    if (!loaded) { $('#view').innerHTML = `<div class="wrap page"><p class="muted">${t('loading')}</p></div>`; return; }
+    if (!loaded) { $('#view').innerHTML = `<div class="wrap page" aria-busy="true" aria-label="${t('loading')}"><div class="sk sk-title"></div><div class="grid">${'<div><div class="sk sk-img"></div><div class="sk sk-line"></div><div class="sk sk-line short"></div></div>'.repeat(8)}</div></div>`; return; }
     const parts = (location.hash.replace(/^#\/?/, '') || '').split('/');
+    document.body.classList.remove('sbar');
     const view = $('#view');
     let active = '';
     if (!parts[0]) { view.innerHTML = pageHome(); bindSlider(); }
@@ -1112,6 +1134,15 @@
 
   function bindProduct(p) {
     if (!p) return;
+    // মোবাইলে নিচে স্থায়ী "কার্টে যোগ করুন" বার, যখন আসল বাটন স্ক্রিনের বাইরে
+    const bar = document.createElement('div');
+    bar.className = 'sticky-buy'; bar.innerHTML = `<div><strong>${esc(L(p.name))}</strong><span>${money(p.price)}</span></div><button class="btn btn-dark">${t('addToCart')}</button>`;
+    $('#view').appendChild(bar);
+    bar.querySelector('button').addEventListener('click', () => { const s = $('.sizes'); if (!document.querySelector('.size[aria-pressed="true"]')) { s.scrollIntoView({ behavior: 'smooth', block: 'center' }); $('#sizeErr').hidden = false; } else $('#addBtn').click(); });
+    const gm = $('#galleryMain');
+    if (gm && window.matchMedia('(hover: hover)').matches) {
+      gm.addEventListener('mousemove', e => { const r = gm.getBoundingClientRect(), img = gm.querySelector('img'); if (img) img.style.transformOrigin = `${(e.clientX - r.left) / r.width * 100}% ${(e.clientY - r.top) / r.height * 100}%`; });
+    }
     recent = [p.id].concat(recent.filter(x => x !== p.id)).slice(0, 12); store.set(RECENT_KEY, JSON.stringify(recent));
     px('ViewContent', { content_ids: [p.id], content_type: 'product', content_name: L(p.name), value: p.price, currency: 'BDT' });
     const rvOpen = $('#rvOpen'), rvForm = $('#rvForm');
@@ -1251,9 +1282,14 @@
     const qty = cart.reduce((s, i) => s + i.qty, 0);
     const bundle = SHOP.bundleMin >= 2 && SHOP.bundlePct && qty >= SHOP.bundleMin ? Math.round(sub * SHOP.bundlePct / 100) : 0;
     const base = sub - bundle;
+    const freeShip = SHOP.freeShipOver > 0 && base >= SHOP.freeShipOver;
+    if (freeShip) return finish(sub, 0, bundle, qty, base);
+    return finish(sub, del, bundle, qty, base);
+  };
+  function finish(sub, del, bundle, qty, base) {
     let off = 0;
     if (coupon && base >= coupon.min) off = coupon.kind === 'percent' ? Math.round(base * Math.min(90, coupon.value) / 100) : coupon.kind === 'fixed' ? Math.min(base, coupon.value) : del;
-    return { sub, del, off, bundle, qty, total: Math.max(0, sub + del - off - bundle) };
+    return { sub, del, off, bundle, qty, base, total: Math.max(0, sub + del - off - bundle) };
   };
   let lastCount = null;
   function renderCartCount() {
@@ -1288,7 +1324,9 @@
       <p class="row"><span>${t('subtotal')}</span><strong>${money(totals().sub)}</strong></p>
       ${totals().bundle ? `<p class="row disc"><span>${t('bundleOff', SHOP.bundlePct)}</span><span>−${money(totals().bundle)}</span></p>`
         : SHOP.bundleMin >= 2 && SHOP.bundlePct ? `<p class="bundle-note sm">${t('bundleMore', SHOP.bundleMin - totals().qty, SHOP.bundlePct)}</p>` : ''}
-      <p class="muted small">${t('deliveryLater')}</p>
+      ${SHOP.freeShipOver > 0 ? (() => { const b = totals().base, pct = Math.min(100, Math.round(b / SHOP.freeShipOver * 100));
+        return `<div class="fship ${pct >= 100 ? 'done' : ''}"><p>${pct >= 100 ? t('freeShipGot') : t('freeShipMore', money(SHOP.freeShipOver - b))}</p><i style="--p:${pct}%"></i></div>`; })() : ''}
+      ${SHOP.freeShipOver > 0 && totals().base >= SHOP.freeShipOver ? '' : `<p class="muted small">${t('deliveryLater')}</p>`}
       <button class="btn btn-dark btn-block" id="toCheckout">${t('checkout')}</button>
     </div>`;
   }
@@ -1460,10 +1498,31 @@
     if ($('#menuDialog').open) $('#menuDialog').close();
     applyChrome(); route();
   }
+  let annTimer = null;
+  // স্ক্রল করলে হেডার ছোট হয়, নিচে গেলে "উপরে যান" বাটন
+  const topBtn = document.createElement('button');
+  topBtn.className = 'to-top'; topBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>';
+  topBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  document.body.appendChild(topBtn);
+  let ticking = false;
+  window.addEventListener('scroll', () => {
+    if (ticking) return; ticking = true;
+    requestAnimationFrame(() => {
+      const y = window.scrollY; document.body.classList.toggle('scrolled', y > 60); topBtn.classList.toggle('on', y > 900);
+      // পণ্যের পেজে "এখনই কিনুন" বাটন উপরে চলে গেলে নিচের বার দেখায়
+      const bb = document.getElementById('buyBtn'), bar = document.querySelector('.sticky-buy');
+      if (bb && bar) { const on = bb.getBoundingClientRect().bottom < 0; bar.classList.toggle('on', on); document.body.classList.toggle('sbar', on); }
+      ticking = false;
+    });
+  }, { passive: true });
   function applyChrome() {
+    topBtn.setAttribute('aria-label', t('backTop'));
     document.documentElement.lang = lang;
     document.body.classList.toggle('bn', lang === 'bn');
-    $('#announce').textContent = L(SHOP.announce) || t('announce');
+    const msgs = (L(SHOP.announce) || t('announce')).split('|').map(x => x.trim()).filter(Boolean);
+    clearInterval(annTimer);
+    $('#announce').innerHTML = `<span class="ann-msg">${esc(msgs[0])}</span>`;
+    if (msgs.length > 1) { let k = 0; annTimer = setInterval(() => { k = (k + 1) % msgs.length; $('#announce').innerHTML = `<span class="ann-msg in">${esc(msgs[k])}</span>`; }, 4500); }
     $('#langBtn').textContent = t('langSwitch');
     $('#menuOpen').setAttribute('aria-label', t('menu'));
     $('#cartOpen').setAttribute('aria-label', t('cartTitle'));

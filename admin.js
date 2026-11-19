@@ -153,6 +153,8 @@
         <section class="card"><div class="card-head"><h2>Best sellers, 30 days</h2></div>
           ${d.top.length ? `<table class="tbl"><thead><tr><th>Product</th><th class="r">Sold</th><th class="r">Sales</th></tr></thead><tbody>${d.top.map(p => `<tr><td>${esc(p.name)}<span class="muted block">${esc(p.code)}${p.color ? ' · ' + esc(p.color) : ''}</span></td><td class="r">${p.qty}</td><td class="r">${money(p.rev)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">Sales will show here after your first orders.</p>'}
         </section>
+        ${d.lowFabrics && d.lowFabrics.length ? `<section class="card"><div class="card-head"><h2>Fabric running low</h2><a class="link" href="#custom">Tailoring</a></div>
+          <ul class="mini-list">${d.lowFabrics.map(f => `<li><a href="#custom"><span>${esc(f.name_en)}${f.color_en ? ' · ' + esc(f.color_en) : ''}</span><span class="r ${f.stock < f.per_thobe ? 'danger' : 'warn'}">${f.stock} gaj · ${Math.floor(f.stock / f.per_thobe)} thobes</span></a></li>`).join('')}</ul></section>` : ''}
         <section class="card"><div class="card-head"><h2>Low stock</h2><a class="link" href="#products">Products</a></div>
           ${d.lowStock.length ? `<ul class="mini-list">${d.lowStock.map(s => `<li><a href="#product/${s.id}"><span>${esc(s.name_en)}<span class="muted block">${esc(s.code)} · Size ${esc(s.label)}</span></span><span class="r ${s.stock ? 'warn' : 'danger'}">${s.stock ? s.stock + ' left' : 'Sold out'}</span></a></li>`).join('')}</ul>` : '<p class="muted">Every size has more than 3 in stock.</p>'}
         </section>
@@ -1030,32 +1032,95 @@
 
     const openFabric = f => {
       let image = f.image || '';
+      const FAM = { white: 'White', cream: 'Cream & beige', brown: 'Brown', grey: 'Grey', black: 'Black', blue: 'Blue', green: 'Green', red: 'Red & maroon', other: 'Other' };
       $('#fabEditor').innerHTML = `<form class="fab-form" id="fabForm">
         <h3 class="sub">${f.id ? 'Edit fabric' : 'New fabric'}</h3>
         <div class="fab-grid">
-          <div><div class="fab-img" id="fabImg" style="--c:${esc(f.color_hex || '#F2F0EA')}">${image ? `<img src="/img/${esc(image)}" alt="">` : ''}</div>
-            <label class="upload"><input type="file" id="fabUp" accept="image/*" hidden><span>${image ? 'Change photo' : 'Add photo'}</span></label>
-            ${image ? '<button type="button" class="text-btn" id="fabRm">Remove photo</button>' : ''}</div>
           <div>
-            <div class="g2"><label class="field"><span>Name (English)</span><input name="name_en" value="${esc(f.name_en || '')}" required></label>
-              <label class="field"><span>নাম (বাংলা)</span><input name="name_bn" value="${esc(f.name_bn || '')}"></label></div>
+            <div class="fab-img ${image ? 'pick' : ''}" id="fabImg" style="--c:${esc(f.color_hex || '#F2F0EA')}" title="Tap the fabric to pick its colour">${image ? `<img src="/img/${esc(image)}" alt="" crossorigin="anonymous">` : '<span class="muted small">Add a close-up photo</span>'}<i class="pick-dot" hidden></i></div>
+            <label class="upload"><input type="file" id="fabUp" accept="image/*" hidden><span class="btn ghost sm">${image ? 'Change photo' : 'Add photo'}</span></label>
+            ${image ? '<button type="button" class="text-btn" id="fabRm">Remove photo</button>' : ''}
+            <p class="muted small">Colour is found from the photo by itself. If it looks wrong, tap on the fabric in the photo.</p>
+          </div>
+          <div>
+            <div class="color-auto">
+              <span class="ca-sw" id="caSw" style="--c:${esc(f.color_hex || '#F2F0EA')}"></span>
+              <div class="ca-txt"><strong id="caName">${esc(f.color_en || 'No colour yet')}</strong><span class="muted small" id="caInfo">${f.color_bn ? esc(f.color_bn) + ' · ' : ''}${esc(f.color_hex || '')}</span></div>
+              <label class="ca-manual" title="Choose colour by hand"><input type="color" name="color_hex" value="${esc(f.color_hex || '#F2F0EA')}"> Change</label>
+            </div>
+            <div class="g3">
+              <label class="field"><span>Colour name (English)</span><input name="color_en" value="${esc(f.color_en || '')}" placeholder="Navy"></label>
+              <label class="field"><span>রঙের নাম (বাংলা)</span><input name="color_bn" value="${esc(f.color_bn || '')}" placeholder="নেভি"></label>
+              <label class="field"><span>Colour family <small>for the filter</small></span><select name="family"><option value="">—</option>${Object.entries(FAM).map(([k, l]) => `<option value="${k}" ${f.family === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+            </div>
+            <div class="g2"><label class="field"><span>Fabric name (English)</span><input name="name_en" value="${esc(f.name_en || '')}" placeholder="Japanese Tetron" required></label>
+              <label class="field"><span>কাপড়ের নাম (বাংলা)</span><input name="name_bn" value="${esc(f.name_bn || '')}" placeholder="জাপানি টেট্রন"></label></div>
             <div class="g2"><label class="field"><span>Short description (English)</span><textarea name="desc_en" rows="2">${esc(f.desc_en || '')}</textarea></label>
               <label class="field"><span>বর্ণনা (বাংলা)</span><textarea name="desc_bn" rows="2">${esc(f.desc_bn || '')}</textarea></label></div>
+            <div class="g3"><label class="field"><span>Made of <small>optional</small></span><input name="composition" value="${esc(f.composition || '')}" placeholder="65% polyester, 35% cotton" list="compList"></label>
+              <label class="field"><span>From <small>optional</small></span><input name="origin" value="${esc(f.origin || '')}" placeholder="Japan" list="originList"></label>
+              <label class="field"><span>Best for <small>optional</small></span><input name="season" value="${esc(f.season || '')}" placeholder="Summer" list="seasonList"></label></div>
+            <datalist id="compList"><option value="100% cotton"><option value="100% polyester"><option value="65% polyester, 35% cotton"><option value="Polyester viscose"><option value="Wool blend"></datalist>
+            <datalist id="originList"><option value="Japan"><option value="Korea"><option value="Indonesia"><option value="Thailand"><option value="China"><option value="Bangladesh"><option value="Pakistan"></datalist>
+            <datalist id="seasonList"><option value="Summer"><option value="Winter"><option value="All year"></datalist>
             <div class="g3"><label class="field"><span>Extra price (BDT)</span><input name="price_add" type="number" min="0" value="${f.price_add || 0}"></label>
               <label class="field"><span>GSM <small>optional</small></span><input name="gsm" type="number" min="0" value="${f.gsm == null ? '' : f.gsm}"></label>
-              <label class="field"><span>Colour</span><input name="color_hex" type="color" value="${esc(f.color_hex || '#F2F0EA')}"></label></div>
-            <div class="g3"><label class="field"><span>Display order</span><input name="sort" type="number" value="${f.sort || 0}"></label>
-              <div class="checks"><label class="check"><input type="checkbox" name="active" ${f.active === 0 ? '' : 'checked'}> Show to customers</label></div></div>
+              <label class="field"><span>Display order</span><input name="sort" type="number" value="${f.sort || 0}"></label></div>
+            <div class="g3 stock-row"><label class="field"><span>In stock (gaj) <small>leave empty if you don’t count</small></span><input name="stock" type="number" min="0" step="0.25" value="${f.stock == null ? '' : f.stock}" placeholder="e.g. 120"></label>
+              <label class="field"><span>Gaj per thobe</span><input name="per_thobe" type="number" min="0.5" max="10" step="0.25" value="${f.per_thobe || 3.5}"></label>
+              <p class="muted small" id="stockHint"></p></div>
+            <div class="checks"><label class="check"><input type="checkbox" name="active" ${f.active === 0 ? '' : 'checked'}> Show to customers</label></div>
             <div class="row-btns">${f.id ? '<button type="button" class="btn danger sm" id="fabDel">Delete fabric</button>' : ''}<span class="spacer"></span>
               <button type="button" class="btn ghost sm" id="fabCancel">Cancel</button><button class="btn primary sm" type="submit">${f.id ? 'Save fabric' : 'Add fabric'}</button></div>
           </div>
         </div></form>`;
       const form = $('#fabForm');
-      form.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      const drawImg = () => { $('#fabImg').innerHTML = image ? `<img src="/img/${esc(image)}" alt="">` : ''; };
+      form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const C = window.AHColors;
+      // নতুন রং বসালে নাম আর পরিবার নিজে নিজে বসে (আগে হাতে বদলে থাকলে নাম বদলায় না)
+      let nameTouched = !!f.color_en;
+      form.color_en.addEventListener('input', () => { nameTouched = true; });
+      form.color_bn.addEventListener('input', () => { nameTouched = true; });
+      const setColor = (hex, auto) => {
+        form.color_hex.value = hex;
+        $('#caSw').style.setProperty('--c', hex); $('#fabImg').style.setProperty('--c', hex);
+        const n = C.nameColor(hex);
+        if (auto || !nameTouched) { form.color_en.value = n.en; form.color_bn.value = n.bn; nameTouched = false; }
+        form.family.value = n.family;
+        $('#caName').textContent = form.color_en.value || n.en;
+        $('#caInfo').textContent = `${form.color_bn.value || n.bn} · ${hex}${n.dE > 6 ? ' · closest name, check it' : ''}`;
+      };
+      const stockHint = () => {
+        const st = parseFloat(form.stock.value), per = parseFloat(form.per_thobe.value) || 3.5;
+        $('#stockHint').textContent = Number.isFinite(st) ? `Enough for about ${Math.floor(st / per)} thobe${Math.floor(st / per) === 1 ? '' : 's'}. Customers stop seeing it when less than one is left.` : 'Not counting stock. It stays available.';
+      };
+      form.stock.addEventListener('input', stockHint); form.per_thobe.addEventListener('input', stockHint); stockHint();
+      const bindPick = () => {
+        const box = $('#fabImg'), img = box.querySelector('img');
+        if (!img) return;
+        box.classList.add('pick');
+        const auto = () => { try { setColor(C.dominantFromImage(img), !nameTouched); } catch (e) { /* tainted */ } };
+        if (!f.color_en || image !== f.image) { if (img.complete) auto(); else img.addEventListener('load', auto, { once: true }); }
+        box.onclick = e => {
+          const r = img.getBoundingClientRect();
+          const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+          if (fx < 0 || fy < 0 || fx > 1 || fy > 1) return;
+          try {
+            setColor(C.colorAt(img, fx, fy), true);
+            const dot = box.querySelector('.pick-dot'); dot.hidden = false; dot.style.left = (e.clientX - box.getBoundingClientRect().left) + 'px'; dot.style.top = (e.clientY - box.getBoundingClientRect().top) + 'px';
+            toast('Colour picked from the photo');
+          } catch (err) { toast('Could not read this photo', true); }
+        };
+      };
+      form.color_hex.addEventListener('input', () => setColor(form.color_hex.value, false));
+      const drawImg = () => {
+        $('#fabImg').innerHTML = image ? `<img src="/img/${esc(image)}" alt="" crossorigin="anonymous"><i class="pick-dot" hidden></i>` : '<span class="muted small">Add a close-up photo</span>';
+        bindPick();
+      };
+      bindPick();
       $('#fabUp').addEventListener('change', async e => {
         const file = e.target.files[0]; if (!file) return;
-        try { toast('Uploading photo…'); image = await uploadFile(file); drawImg(); toast('Photo added. Save the fabric to keep it.'); } catch (err) { fail(err); }
+        try { toast('Uploading photo…'); image = await uploadFile(file); drawImg(); toast('Photo added. Colour found from the photo.'); } catch (err) { fail(err); }
       });
       const rm = $('#fabRm'); if (rm) rm.addEventListener('click', () => { image = ''; drawImg(); });
       $('#fabCancel').addEventListener('click', () => { $('#fabEditor').innerHTML = ''; });
@@ -1073,11 +1138,15 @@
     $('#addFabric').addEventListener('click', () => openFabric({}));
     $('#fabList').addEventListener('click', e => { const r = e.target.closest('[data-fab]'); if (r) openFabric(fabrics.find(f => f.id === +r.dataset.fab)); });
   }
-  const fabricRow = f => `<button type="button" class="fab-row ${f.active ? '' : 'inactive'}" data-fab="${f.id}">
+  const fabricRow = f => {
+    const left = f.stock == null ? null : Math.floor(f.stock / (f.per_thobe || 3.5));
+    return `<button type="button" class="fab-row ${f.active ? '' : 'inactive'}" data-fab="${f.id}">
     <span class="pthumb" style="--c:${esc(f.color_hex)}">${f.image ? `<img src="/img/${esc(f.image)}" alt="" loading="lazy">` : ''}</span>
-    <span class="pinfo"><strong>${esc(f.name_en)}</strong><span class="muted">${esc(f.name_bn)}${f.gsm ? ' · GSM ' + f.gsm : ''}</span></span>
+    <span class="pinfo"><strong>${esc(f.name_en)}${f.color_en ? ` <span class="muted">· ${esc(f.color_en)}</span>` : ''}</strong><span class="muted">${esc([f.composition, f.origin, f.gsm ? 'GSM ' + f.gsm : ''].filter(Boolean).join(' · ') || f.name_bn)}</span></span>
     <span>${f.price_add ? '+' + money(f.price_add) : 'No extra'}</span>
-    <span>${f.active ? '<span class="badge st-delivered">Live</span>' : '<span class="badge">Hidden</span>'}</span></button>`;
+    <span class="${left == null ? 'muted' : left < 1 ? 'danger' : left < 3 ? 'warn' : ''}">${left == null ? 'Not counted' : `${f.stock} gaj<span class="block small muted">${left} thobe${left === 1 ? '' : 's'}</span>`}</span>
+    <span>${!f.active ? '<span class="badge">Hidden</span>' : left != null && left < 1 ? '<span class="badge st-cancelled">Out</span>' : '<span class="badge st-delivered">Live</span>'}</span></button>`;
+  };
 
   // ================= GALLERY =================
   async function viewGallery() {
@@ -1152,6 +1221,10 @@
         <section class="card"><h2>Announcement bar</h2>
           <p class="muted small">The short line at the very top of the website, for offers or delivery news.</p>
           <div class="g2">${f('announce_en', 'English', { area: true })}${f('announce_bn', 'বাংলা', { area: true })}</div>
+        </section>
+        <section class="card"><h2>Free delivery</h2>
+          <p class="muted small">Delivery becomes free when the order is this much or more. The cart shows customers how much more they need. Set 0 to turn off.</p>
+          <div class="g2">${f('free_ship_over', 'Free delivery from (BDT)', { type: 'number', ph: '3000' })}</div>
         </section>
         <section class="card"><h2>Bundle offer</h2>
           <p class="muted small">Automatic discount when a customer buys several pieces together, like “Buy 2, save 10%”. It shows on product pages and in the cart. Set either box to 0 to turn it off.</p>

@@ -320,3 +320,19 @@ Object.assign(STR.bn, {
   priceUnder: n => `${n.toLocaleString('en-IN')} টাকার কম`, priceBetween: (a, b) => `${a.toLocaleString('en-IN')} থেকে ${b.toLocaleString('en-IN')} টাকা`, priceOver: n => `${n.toLocaleString('en-IN')} টাকার বেশি`,
   inStockOnly: 'শুধু স্টকে আছে', noMatch: 'এই ফিল্টারে কোনো জুব্বা নেই।'
 });
+
+// ===== v8: কাপড় বাছাই, ফ্রি ডেলিভারি, ডেলিভারির তারিখ =====
+Object.assign(STR.en, {
+  famAll: 'All colours', fam: { white: 'White', cream: 'Cream & beige', brown: 'Brown', grey: 'Grey', black: 'Black', blue: 'Blue', green: 'Green', red: 'Red & maroon', other: 'Other' },
+  fewLeft: n => `Only ${n} left`, zoomFabric: 'See the fabric up close', madeOf: 'Made of', from: 'from', bestFor: 'Best for',
+  freeShipGot: 'You get free delivery', freeShipMore: m => `Add ${m} more for free delivery`,
+  arrives: (d1, d2) => `Order today, get it ${d1}${d2 ? ' to ' + d2 : ''}`, insideDhaka: 'inside Dhaka', outsideDhaka: 'outside Dhaka',
+  backTop: 'Back to top'
+});
+Object.assign(STR.bn, {
+  famAll: 'সব রং', fam: { white: 'সাদা', cream: 'ক্রিম ও বেইজ', brown: 'বাদামি', grey: 'ছাই', black: 'কালো', blue: 'নীল', green: 'সবুজ', red: 'লাল ও মেরুন', other: 'অন্যান্য' },
+  fewLeft: n => `আর মাত্র ${n}টির কাপড় আছে`, zoomFabric: 'কাপড়টি কাছ থেকে দেখুন', madeOf: 'উপাদান', from: 'দেশ', bestFor: 'উপযুক্ত',
+  freeShipGot: 'আপনি ফ্রি ডেলিভারি পাচ্ছেন', freeShipMore: m => `আর ${m} কিনলে ফ্রি ডেলিভারি`,
+  arrives: (d1, d2) => `আজ অর্ডার করলে পাবেন ${d1}${d2 ? ' থেকে ' + d2 : ''}`, insideDhaka: 'ঢাকার ভেতরে', outsideDhaka: 'ঢাকার বাইরে',
+  backTop: 'উপরে যান'
+});

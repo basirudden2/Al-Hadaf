@@ -145,16 +145,104 @@
     : money(p.price);
 
   const wishBtn = (p, cls = '') => `<button class="wish ${cls}" data-wish="${esc(p.id)}" aria-pressed="${wish.includes(p.id)}" aria-label="${wish.includes(p.id) ? t('wishRemove') : t('wishAdd')}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.4a4.3 4.3 0 0 1 7.5 2.4C19.5 15.4 12 20 12 20Z"/></svg></button>`;
-  const card = p => `<div class="card-wrap">${cardLink(p)}${wishBtn(p)}</div>`;
-  function cardLink(p) {
+  // ---------- প্রোডাক্ট কার্ড: এক ডিজাইনের সব রং এক কার্ডে, দ্রুত কার্টে যোগ ----------
+  const stockOf = p => p.sizes.reduce((n, z) => n + Math.max(0, z.stock), 0);
+  const siblingsOf = p => { const g = PRODUCTS.filter(x => x.group === p.group); return g.length ? g : [p]; };
+  const pctOff = p => p.compare && p.compare > p.price ? Math.round((1 - p.price / p.compare) * 100) : 0;
+  const bagIcon = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M5 8h14l-1 12H6L5 8Z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8M12 11.5v5M9.5 14h5" stroke-linecap="round"/></svg>';
+  function card(p, open) {
+    const sib = siblingsOf(p), out = stockOf(p) === 0, off = pctOff(p);
     const alt = p.images && p.images[1] ? `<div class="card-alt">${media(p, 1)}</div>` : '';
-    return `<a class="card" href="#/p/${p.id}">
-      <div class="card-media">${media(p, 0)}${alt}${p.badge ? `<span class="badge">${esc(L(p.badge))}</span>` : ''}</div>
-      <h3>${esc(L(p.name))}</h3>
-      <p class="card-sub">${esc(L(p.color))}</p>
-      <p class="card-price">${priceHtml(p)}</p>
-      ${p.rating ? `<p class="card-rating">${starsHtml(p.rating.avg, 'sm')}<span>(${p.rating.count})</span></p>` : ''}
-    </a>`;
+    return `<div class="card-wrap pc" data-card="${esc(p.id)}">
+      <div class="pc-media">
+        <a class="pc-img" href="#/p/${p.id}" tabindex="-1" aria-hidden="true">${media(p, 0)}${alt}</a>
+        <div class="pc-badges">${off ? `<span class="b-sale">${t('sale')}</span>` : ''}${p.badge ? `<span class="badge">${esc(L(p.badge))}</span>` : ''}</div>
+        ${wishBtn(p)}
+        <div class="pc-bar">
+          <button class="pc-bag" data-quick="${esc(p.id)}" aria-label="${t('quickAdd')}: ${esc(L(p.name))}" ${out ? 'disabled' : ''}>${bagIcon}</button>
+          ${out ? `<span class="pc-out">${t('outOfStock')}</span>` : `<button class="pc-qa" data-quick="${esc(p.id)}" tabindex="-1">${t('quickAdd')}</button>`}
+        </div>
+      </div>
+      <div class="pc-info">
+        <div class="pc-title"><h3><a href="#/p/${p.id}">${esc(L(p.name))}</a></h3><span class="pc-code">${esc(p.id)}</span></div>
+        ${sib.length > 1 ? `<button class="pc-colors" data-colors aria-expanded="${!!open}">${t('colorsN', sib.length)}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></button>
+          <div class="pc-sw" ${open ? '' : 'hidden'}>${sib.map(x => `<button class="pc-dot" data-swap="${esc(x.id)}" style="--sw:${esc(x.color.hex)}" aria-label="${esc(L(x.color))}" title="${esc(L(x.color))}" aria-current="${x.id === p.id}"></button>`).join('')}<span class="pc-cname">${esc(L(p.color))}</span></div>`
+          : `<p class="pc-sub">${esc(L(p.color))}</p>`}
+        <p class="pc-price"><strong>${money(p.price)}</strong>${off ? ` <s>${money(p.compare)}</s> <em>${off}% ${t('off')}</em>` : ''}</p>
+        ${p.rating ? `<p class="card-rating">${starsHtml(p.rating.avg, 'sm')}<span>(${p.rating.count})</span></p>` : ''}
+      </div>
+    </div>`;
+  }
+  // প্রতিটি ডিজাইনের একটাই কার্ড; স্টকে থাকা রংটা আগে দেখায়
+  function byDesign(list) {
+    const seen = new Map();
+    list.forEach(p => {
+      const cur = seen.get(p.group);
+      if (!cur || (stockOf(cur) === 0 && stockOf(p) > 0)) seen.set(p.group, p);
+    });
+    return [...seen.values()];
+  }
+
+  // ---------- দ্রুত কার্টে যোগ (সাইজ বেছে) ----------
+  function openQuick(id) {
+    const p = byId(id); if (!p) return;
+    const sib = siblingsOf(p);
+    const inStock = p.sizes.filter(z => z.stock > 0);
+    let chosen = inStock.length === 1 ? inStock[0].id : null, qty = 1;
+    const draw = () => {
+      $('#quickBody').innerHTML = `<button class="icon-btn dlg-x" data-close aria-label="${t('close')}">×</button>
+        <div class="qk">
+          <a class="qk-media" href="#/p/${p.id}" data-close>${media(p, 0)}</a>
+          <div class="qk-info">
+            <p class="pc-code">${esc(p.id)}</p>
+            <h2>${esc(L(p.name))}</h2>
+            <p class="pc-price"><strong>${money(p.price)}</strong>${pctOff(p) ? ` <s>${money(p.compare)}</s> <em>${pctOff(p)}% ${t('off')}</em>` : ''}</p>
+            ${sib.length > 1 ? `<p class="opt-label">${t('color')}: <strong>${esc(L(p.color))}</strong></p><div class="swatches qk-sw">${sib.map(x => `<button class="swatch" data-qswap="${esc(x.id)}" style="--sw:${esc(x.color.hex)}" aria-label="${esc(L(x.color))}" aria-current="${x.id === p.id}"></button>`).join('')}</div>` : ''}
+            <p class="opt-label">${t('chooseSize')}</p>
+            <div class="sizes">${p.sizes.map(z => `<button class="size ${z.stock > 0 ? '' : 'out'}" data-qsize="${z.id}" aria-pressed="${chosen === z.id}" ${z.stock > 0 ? '' : `disabled title="${t('soldOut')}"`}>${esc(z.label)}</button>`).join('')}</div>
+            <div class="buy-row"><div class="qty"><button data-qq="-1" aria-label="−">−</button><span>${qty}</span><button data-qq="1" aria-label="+">+</button></div>
+              <button class="btn btn-dark" id="qkAdd">${t('addToCart')}</button></div>
+            <p class="error" id="qkErr" hidden></p>
+            <a class="link" href="#/p/${p.id}" data-close>${t('viewDetails')}</a>
+          </div>
+        </div>`;
+    };
+    draw();
+    const dlg = $('#quickDialog');
+    dlg.onclick = e => {
+      if (e.target === dlg) return dlg.close();
+      const sw = e.target.closest('[data-qswap]'); if (sw) { openQuick(sw.dataset.qswap); return; }
+      const sz = e.target.closest('[data-qsize]'); if (sz && !sz.disabled) { chosen = Number(sz.dataset.qsize); draw(); return; }
+      const q = e.target.closest('[data-qq]'); if (q) { const max = chosen ? Math.min(10, p.sizes.find(z => z.id === chosen).stock) : 10; qty = Math.min(max, Math.max(1, qty + Number(q.dataset.qq))); draw(); return; }
+      if (e.target.closest('#qkAdd')) {
+        if (!chosen) { $('#qkErr').textContent = t('chooseSize'); $('#qkErr').hidden = false; return; }
+        addToCart(chosen, qty);
+        px('AddToCart', { content_ids: [p.id], content_type: 'product', value: p.price * qty, currency: 'BDT' });
+        dlg.close(); toast(t('added', L(p.name)));
+      }
+    };
+    if (!dlg.open) dlg.showModal();
+  }
+
+  // ---------- মেনুর ঠিক নিচে চলমান গ্যালারি (হোম পেজ) ----------
+  function topGallery() {
+    galCat = 'all';
+    const list = allGallery();
+    if (!list.length) return '';
+    let fill = list; while (fill.length < 10) fill = fill.concat(list);
+    const prices = Object.fromEntries(PRODUCTS.map(p => [p.id, p]));
+    const item = (g, k, hidden) => {
+      const pid = g.href ? g.href.split('/').pop() : '', p = prices[pid];
+      const inner = `<img src="${esc(g.src)}" alt="" loading="${k < 6 ? 'eager' : 'lazy'}"><span class="tg-cap"><b>${esc(p ? L(p.name) : g.caption)}</b>${p ? `<i>${money(p.price)}</i>` : ''}</span>`;
+      const tab = hidden ? 'tabindex="-1"' : '';
+      return g.href ? `<a class="tg-item" href="${g.href}" ${tab} aria-label="${esc(g.caption)}">${inner}</a>`
+        : `<button class="tg-item" data-gal="${k % list.length}" ${tab} aria-label="${esc(g.caption || t('photo'))}">${inner}</button>`;
+    };
+    const track = hidden => `<div class="tg-track" ${hidden ? 'aria-hidden="true"' : ''}>${fill.map((g, k) => item(g, k, hidden || k >= list.length)).join('')}</div>`;
+    return `<section class="topgal" aria-label="${t('galleryTitle')}" style="--dur:${Math.max(40, fill.length * 6)}s">
+      <div class="tg-row">${track(false)}${track(true)}</div>
+      <a class="tg-all" href="#/gallery">${t('galleryTitle')} →</a>
+    </section>`;
   }
 
   // ---------- pages ----------
@@ -164,9 +252,10 @@
       return `<a class="tile" href="#/c/${c.id}"><div class="tile-media">${p ? media(p, 0) : ''}</div><span>${esc(L(c.name))}</span></a>`;
     }).join('');
     const newOnes = PRODUCTS.filter(p => p.isNew);
-    const fresh = (newOnes.length ? newOnes : PRODUCTS).slice(0, 4);
+    const fresh = byDesign(newOnes.length ? newOnes : PRODUCTS).slice(0, 4);
     const combo = PRODUCTS.find(p => p.cat === 'father-son');
     return `
+    ${topGallery()}
     ${BANNERS.length ? bannerSlider() : `<section class="hero">
       <div class="wrap hero-row">
         <div class="hero-copy">
@@ -185,7 +274,7 @@
     </section>
     <section class="wrap block">
       <div class="block-head"><h2 class="block-title">${t('newArrivals')}</h2><a class="link" href="#/c/all">${t('viewAll')}</a></div>
-      ${fresh.length ? `<div class="grid">${fresh.map(card).join('')}</div>` : `<p class="muted">${t('emptyList')}</p>`}
+      ${fresh.length ? `<div class="grid">${fresh.map(p => card(p)).join('')}</div>` : `<p class="muted">${t('emptyList')}</p>`}
     </section>
     ${combo ? `<section class="wrap block"><div class="promo">
       <div class="promo-media">${media(combo, 0)}</div>
@@ -197,32 +286,50 @@
         <p class="promo-price">${t('from')} ${money(CUSTOM.basePrice + Math.min(...CUSTOM.fabrics.map(f => f.add)))}</p>
         <a class="btn btn-dark" href="#/custom">${t('customPromoBtn')}</a></div>
     </div></section>` : ''}
-    ${marquee()}
     ${recentBlock()}
     <section class="wrap trust">${STR[lang].trust.map(([h, s]) => `<div><h3>${h}</h3><p>${s}</p></div>`).join('')}</section>`;
   }
 
+  // ---------- ক্যাটাগরি পেজ: রং, সাইজ, দাম ফিল্টার আর সর্ট ----------
+  let filt = { cat: null, colors: [], sizes: [], price: '', stock: false };
+  const PRICE_STEPS = [2000, 3000, 5000];
+  const priceBucket = v => v < PRICE_STEPS[0] ? 'a' : v < PRICE_STEPS[1] ? 'b' : v < PRICE_STEPS[2] ? 'c' : 'd';
+  const bucketLabel = k => ({ a: t('priceUnder', PRICE_STEPS[0]), b: t('priceBetween', PRICE_STEPS[0], PRICE_STEPS[1]), c: t('priceBetween', PRICE_STEPS[1], PRICE_STEPS[2]), d: t('priceOver', PRICE_STEPS[2]) }[k]);
   function pageCategory(id) {
     const c = catOf(id) || catOf('all');
-    let list = PRODUCTS.filter(p => c.id === 'all' || p.cat === c.id);
-    if (sortBy === 'low') list = [...list].sort((a, b) => a.price - b.price);
-    if (sortBy === 'high') list = [...list].sort((a, b) => b.price - a.price);
+    if (filt.cat !== c.id) filt = { cat: c.id, colors: [], sizes: [], price: '', stock: false };
+    const base = PRODUCTS.filter(p => c.id === 'all' || p.cat === c.id);
+    const colors = [...new Map(base.map(p => [p.color.en, p])).values()];
+    const sizes = [...new Set(base.flatMap(p => p.sizes.map(z => z.label)))];
+    const buckets = ['a', 'b', 'c', 'd'].filter(k => base.some(p => priceBucket(p.price) === k));
+    let list = base.filter(p => (!filt.colors.length || filt.colors.includes(p.color.en))
+      && (!filt.sizes.length || p.sizes.some(z => filt.sizes.includes(z.label) && (!filt.stock || z.stock > 0)))
+      && (!filt.price || priceBucket(p.price) === filt.price)
+      && (!filt.stock || stockOf(p) > 0));
+    list = byDesign(list);
+    if (sortBy === 'low') list.sort((a, b) => a.price - b.price);
+    if (sortBy === 'high') list.sort((a, b) => b.price - a.price);
+    if (sortBy === 'new') list.sort((a, b) => (b.isNew ? 1 : 0) - (a.isNew ? 1 : 0));
+    const n = filt.colors.length + filt.sizes.length + (filt.price ? 1 : 0) + (filt.stock ? 1 : 0);
+    const chev = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+    const drop = (label, count, body, cls = '') => `<details class="fdrop ${cls}"><summary>${label}${count ? ` <b>${count}</b>` : ''}${chev}</summary><div class="fpanel">${body}</div></details>`;
+    const sortLabels = { default: t('sortDefault'), new: t('sortNew'), low: t('sortLow'), high: t('sortHigh') };
     return `<div class="wrap page">
-      <nav class="crumbs"><a href="#/">${t('home')}</a><span>/</span><span>${esc(L(c.name))}</span></nav>
-      <div class="cat-head">
-        <h1>${esc(L(c.name))}</h1>
-        <div class="cat-tools">
-          <span class="muted">${list.length} ${t('items')}</span>
-          <select id="sortSel" aria-label="Sort">
-            <option value="default">${t('sortDefault')}</option>
-            <option value="low">${t('sortLow')}</option>
-            <option value="high">${t('sortHigh')}</option>
-          </select>
+      <div class="cat-bar">
+        <nav class="crumbs"><a href="#/">${t('home')}</a><span>/</span><span>${esc(L(c.name))}</span></nav>
+        <div class="filters" id="filters">
+          ${colors.length > 1 ? drop(t('fColor'), filt.colors.length, colors.map(p => `<label class="fopt"><input type="checkbox" data-f="colors" value="${esc(p.color.en)}" ${filt.colors.includes(p.color.en) ? 'checked' : ''}><i class="fsw" style="--sw:${esc(p.color.hex)}"></i>${esc(L(p.color))}</label>`).join('')) : ''}
+          ${sizes.length > 1 ? drop(t('fSize'), filt.sizes.length, `<div class="fsizes">${sizes.map(z => `<label class="fchip"><input type="checkbox" data-f="sizes" value="${esc(z)}" ${filt.sizes.includes(z) ? 'checked' : ''}><span>${esc(z)}</span></label>`).join('')}</div>`) : ''}
+          ${buckets.length > 1 ? drop(t('fPrice'), filt.price ? 1 : 0, buckets.map(k => `<label class="fopt"><input type="radio" name="fprice" data-f="price" value="${k}" ${filt.price === k ? 'checked' : ''}>${bucketLabel(k)}</label>`).join('')) : ''}
+          <label class="fstock"><input type="checkbox" data-f="stock" ${filt.stock ? 'checked' : ''}> ${t('inStockOnly')}</label>
+          ${drop(sortLabels[sortBy], 0, Object.entries(sortLabels).map(([k, l]) => `<label class="fopt"><input type="radio" name="fsort" data-f="sort" value="${k}" ${sortBy === k ? 'checked' : ''}>${l}</label>`).join(''), 'fsort')}
         </div>
       </div>
-      ${list.length ? `<div class="grid">${list.map(card).join('')}</div>` : `<p class="muted">${t('emptyList')}</p>`}
+      <div class="cat-head"><h1>${esc(L(c.name))}</h1><span class="muted">${list.length} ${t('items')}${n ? ` · <button class="text-btn" data-fclear>${t('fClear')}</button>` : ''}</span></div>
+      ${list.length ? `<div class="grid">${list.map(p => card(p)).join('')}</div>` : `<div class="empty-state"><p class="muted">${n ? t('noMatch') : t('emptyList')}</p>${n ? `<button class="btn btn-outline" data-fclear>${t('fClear')}</button>` : ''}</div>`}
     </div>`;
   }
+
 
   function pageProduct(id) {
     const p = byId(id);
@@ -283,7 +390,7 @@
       </div>
       ${reviewsBlock(p)}
       ${recentBlock(p.id)}
-      ${rel.length ? `<section class="block"><h2 class="block-title">${t('related')}</h2><div class="grid">${rel.map(card).join('')}</div></section>` : ''}
+      ${rel.length ? `<section class="block"><h2 class="block-title">${t('related')}</h2><div class="grid">${rel.map(p => card(p)).join('')}</div></section>` : ''}
     </div>`;
   }
 
@@ -691,6 +798,13 @@
     btn.disabled = false;
   });
   document.addEventListener('click', e => {
+    if (!e.target.closest('.fdrop')) document.querySelectorAll('.fdrop[open]').forEach(d => { d.open = false; });
+    const qa = e.target.closest('[data-quick]');
+    if (qa) { e.preventDefault(); openQuick(qa.dataset.quick); return; }
+    const ct = e.target.closest('[data-colors]');
+    if (ct) { const open = ct.getAttribute('aria-expanded') !== 'true'; ct.setAttribute('aria-expanded', open); ct.nextElementSibling.hidden = !open; return; }
+    const sw = e.target.closest('[data-swap]');
+    if (sw) { const c = sw.closest('[data-card]'), p = byId(sw.dataset.swap); if (c && p) { c.outerHTML = card(p, true); const n = document.querySelector(`[data-card="${CSS.escape(p.id)}"]`); if (n) n.classList.add('in'); } return; }
     const w = e.target.closest('[data-wish]');
     if (w) { e.preventDefault(); e.stopPropagation(); toggleWish(w.dataset.wish); return; }
     const cp = e.target.closest('[data-copy]');
@@ -740,7 +854,7 @@
   // ---------- সম্প্রতি দেখা পণ্য ----------
   function recentBlock(except) {
     const list = recent.filter(id => id !== except).map(byId).filter(Boolean).slice(0, 4);
-    return list.length ? `<section class="wrap block"><h2 class="block-title">${t('recent')}</h2><div class="grid">${list.map(card).join('')}</div></section>` : '';
+    return list.length ? `<section class="wrap block"><h2 class="block-title">${t('recent')}</h2><div class="grid">${list.map(p => card(p)).join('')}</div></section>` : '';
   }
 
   // ---------- উইশলিস্ট ----------
@@ -758,7 +872,7 @@
     const list = wish.map(byId).filter(Boolean);
     return `<div class="wrap page"><nav class="crumbs"><a href="#/">${t('home')}</a><span>/</span><span>${t('wishlist')}</span></nav>
       <div class="cat-head"><h1>${t('wishlist')}</h1>${list.length ? `<span class="muted">${list.length} ${t('items')}</span>` : ''}</div>
-      ${list.length ? `<div class="grid">${list.map(card).join('')}</div>` : `<div class="empty-state"><p class="muted">${t('wishEmpty')}</p><a class="btn btn-dark" href="#/c/all">${t('continueShopping')}</a></div>`}</div>`;
+      ${list.length ? `<div class="grid">${list.map(p => card(p)).join('')}</div>` : `<div class="empty-state"><p class="muted">${t('wishEmpty')}</p><a class="btn btn-dark" href="#/c/all">${t('continueShopping')}</a></div>`}</div>`;
   }
 
   // ---------- স্টকে ফিরলে জানানো ----------
@@ -977,11 +1091,24 @@
   window.addEventListener('hashchange', () => { document.querySelectorAll('dialog[open]').forEach(d => d.close()); route(); window.scrollTo(0, 0); });
 
   function bindCategory() {
-    const sel = $('#sortSel');
-    if (!sel) return;
-    sel.value = sortBy;
-    sel.addEventListener('change', () => { sortBy = sel.value; route(); });
+    const box = $('#filters'); if (!box) return;
+    const redraw = () => {
+      const open = [...box.querySelectorAll('details')].findIndex(d => d.open), y = window.scrollY;
+      route(); window.scrollTo(0, y);
+      if (open >= 0) { const d = $('#filters').querySelectorAll('details')[open]; if (d) d.open = true; }
+    };
+    box.addEventListener('toggle', e => { if (e.target.open) box.querySelectorAll('details').forEach(d => { if (d !== e.target) d.open = false; }); }, true);
+    box.addEventListener('change', e => {
+      const f = e.target.dataset.f; if (!f) return;
+      if (f === 'colors' || f === 'sizes') { const v = e.target.value; filt[f] = e.target.checked ? filt[f].concat(v) : filt[f].filter(x => x !== v); }
+      if (f === 'price') filt.price = e.target.value;
+      if (f === 'stock') filt.stock = e.target.checked;
+      if (f === 'sort') { sortBy = e.target.value; route(); return; }
+      redraw();
+    });
+    $('#view').querySelectorAll('[data-fclear]').forEach(b => b.addEventListener('click', () => { filt = { cat: filt.cat, colors: [], sizes: [], price: '', stock: false }; route(); }));
   }
+
 
   function bindProduct(p) {
     if (!p) return;

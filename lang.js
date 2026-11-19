@@ -304,3 +304,19 @@ Object.assign(STR.bn, {
   payCancelled: 'আপনি পেমেন্ট বাতিল করেছেন। অর্ডার সেভ আছে, এখন বা ডেলিভারির সময় টাকা দিতে পারবেন।', paid: 'পেমেন্ট হয়েছে',
   share: 'শেয়ার', copyLink: 'লিংক কপি', linkCopied: 'লিংক কপি হয়েছে'
 });
+
+// ===== v7: নতুন কার্ড, ফিল্টার, উপরের গ্যালারি =====
+Object.assign(STR.en, {
+  sale: 'Sale', off: 'OFF', outOfStock: 'Out of stock', quickAdd: 'Quick add', colorsN: n => n === 1 ? '1 colour' : `${n} colours`,
+  chooseSize: 'Choose your size', viewDetails: 'See full details',
+  fColor: 'Colour', fSize: 'Size', fPrice: 'Price', fClear: 'Clear all', fApply: 'Show results', sortNew: 'Newest first',
+  priceUnder: n => `Under BDT ${n.toLocaleString('en-IN')}`, priceBetween: (a, b) => `BDT ${a.toLocaleString('en-IN')} to ${b.toLocaleString('en-IN')}`, priceOver: n => `Over BDT ${n.toLocaleString('en-IN')}`,
+  inStockOnly: 'In stock only', noMatch: 'No thobes match these filters.'
+});
+Object.assign(STR.bn, {
+  sale: 'সেল', off: 'ছাড়', outOfStock: 'স্টকে নেই', quickAdd: 'দ্রুত কার্টে', colorsN: n => `${n}টি রং`,
+  chooseSize: 'সাইজ বেছে নিন', viewDetails: 'বিস্তারিত দেখুন',
+  fColor: 'রং', fSize: 'সাইজ', fPrice: 'দাম', fClear: 'সব মুছুন', fApply: 'ফলাফল দেখুন', sortNew: 'নতুনগুলো আগে',
+  priceUnder: n => `${n.toLocaleString('en-IN')} টাকার কম`, priceBetween: (a, b) => `${a.toLocaleString('en-IN')} থেকে ${b.toLocaleString('en-IN')} টাকা`, priceOver: n => `${n.toLocaleString('en-IN')} টাকার বেশি`,
+  inStockOnly: 'শুধু স্টকে আছে', noMatch: 'এই ফিল্টারে কোনো জুব্বা নেই।'
+});

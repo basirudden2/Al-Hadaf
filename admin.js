@@ -1815,10 +1815,42 @@
         <p class="muted small">The “kind” decides how profit is counted. Fabric and buttons are <b>stock</b>: their cost counts when the thobe sells. A machine is an <b>asset</b>.</p>
         <div class="g2">${['in', 'out'].map(type => `<div><h3 class="sub">${type === 'in' ? 'Joma' : 'Khoroch'}</h3><table class="tbl"><tbody>
           ${ACC.categories.filter(c => c.type === type).map(c => `<tr class="${c.active ? '' : 'off'}"><td>${esc(c.name)}</td><td class="muted small">${KIND_LABEL[c.kind]}</td><td class="r"><button class="btn ghost sm" data-ecat="${c.id}">Edit</button></td></tr>`).join('')}</tbody></table></div>`).join('')}</div></section>
+      <section class="card danger-zone"><h2>Start over</h2>
+        <p class="muted small">Deletes the joma, khoroch and transfer entries so you can enter everything again. Shareholders, accounts and categories stay. A full backup file downloads to your computer first.</p>
+        <button class="btn danger sm" id="resetBtn">Delete all entries…</button></section>
       <section class="card"><h2>Website sales</h2><p class="muted small">Delivered orders post as Sales by themselves (into bKash if paid by bKash, otherwise into “Courier (to receive)”). Orders delivered before this update can be posted once:</p>
         <button class="btn ghost sm" id="backfill">Post past delivered orders</button></section>
       <dialog class="adlg" id="sDlg"></dialog></div>`;
     $('#ruleForm').onsubmit = async ev => { ev.preventDefault(); try { await api('acc/settings', { method: 'PUT', body: Object.fromEntries(new FormData(ev.target)) }); toast('Saved'); } catch (err) { fail(err); } };
+    $('#resetBtn').onclick = () => {
+      dlg.innerHTML = `<form class="adlg-body" id="rsForm"><div class="adlg-head"><div><h2>Delete all entries</h2><p class="muted small">This cannot be undone from here. A backup file downloads first, and Cloudflare keeps 7 days of history.</p></div><button type="button" class="icon" data-x>×</button></div>
+        <label class="check"><input type="checkbox" name="keep_orders" checked> Keep sales that came from website orders</label>
+        <label class="check"><input type="checkbox" name="reset_opening" checked> Set every account’s opening balance to 0</label>
+        <label class="check"><input type="checkbox" name="reset_target_log"> Also clear shareholders’ target history</label>
+        <label class="field"><span>Type <b>DELETE</b> to confirm</span><input name="confirm" autocomplete="off" autocapitalize="characters"></label>
+        <p class="err" id="rsErr" hidden></p>
+        <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn danger" id="rsGo">Download backup and delete</button></div></form>`;
+      dlg.showModal(); dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
+      $('#rsForm').onsubmit = async ev => {
+        ev.preventDefault();
+        const f = ev.target;
+        if (f.confirm.value.trim().toUpperCase() !== 'DELETE') { $('#rsErr').textContent = 'Type DELETE in the box to confirm.'; $('#rsErr').hidden = false; return; }
+        $('#rsGo').disabled = true; $('#rsGo').textContent = 'Saving backup…';
+        try {
+          // আগে পুরো ক্যাশ বুক CSV হিসেবে ডাউনলোড
+          const d = await api('acc/entries?all=1');
+          const cell = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+          const rows = [['ID', 'Date', 'Type', 'Category', 'Description', 'Amount', 'Payment Method', 'Paid/Received By', 'Note', 'Timestamp', 'Shareholder', 'Created By', 'Last Edited By', 'Order']];
+          d.rows.slice().reverse().forEach(e => rows.push(['TX-' + e.id, e.day, { in: 'Joma', out: 'Khoroch', transfer: 'Transfer' }[e.type], e.type === 'transfer' ? 'Transfer to ' + e.to_account : e.category, e.note, e.amount, e.account, e.person, e.ref, e.created_at, e.partner, e.created_by, e.updated_by, e.order_no]));
+          const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + rows.map(r => r.map(cell).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' }));
+          a.download = `al-hadaf-accounts-backup-${todayBD()}.csv`; document.body.appendChild(a); a.click(); a.remove();
+          await new Promise(r => setTimeout(r, 800));
+          $('#rsGo').textContent = 'Deleting…';
+          const r = await api('acc/reset', { method: 'POST', body: { confirm: 'DELETE', keep_orders: f.keep_orders.checked, reset_opening: f.reset_opening.checked, reset_target_log: f.reset_target_log.checked } });
+          dlg.close(); toast(`${r.deleted} entries deleted. Backup saved in your Downloads.`); location.hash = 'accounts/overview';
+        } catch (err) { $('#rsErr').textContent = err.message; $('#rsErr').hidden = false; $('#rsGo').disabled = false; $('#rsGo').textContent = 'Download backup and delete'; }
+      };
+    };
     $('#backfill').onclick = async () => { try { const r = await api('acc/backfill', { method: 'POST' }); toast(`${r.posted} orders posted as sales`); } catch (err) { fail(err); } };
     const dlg = $('#sDlg');
     const form = (title, html, path, method) => {

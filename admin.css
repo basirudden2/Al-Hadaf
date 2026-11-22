@@ -583,3 +583,5 @@ tr.off td { opacity: .5; }
   .tbl.book td:nth-child(7) { grid-column: 2; grid-row: 1; text-align: right; }
 }
 @media print { .acc-tabs, .head-tools, #bookF, .noprint { display: none !important; } .stmt { border: 0; box-shadow: none; } }
+.danger-zone { border-color: #E8B4AE; }
+.danger-zone h2 { color: var(--red); }

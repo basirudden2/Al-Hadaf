@@ -1839,6 +1839,21 @@ async function accApi(req, env, parts, m, url, user) {
     return json({ ok: true });
   }
   if (sub === 'import' && m === 'POST') return importEntries(req, env, user);
+  if (sub === 'reset' && m === 'POST') {
+    // সব এন্ট্রি মুছে নতুন করে শুরু (শুধু সুপার অ্যাডমিন, "DELETE" লিখে নিশ্চিত করতে হয়)
+    const b = await readJson(req) || {};
+    if (b.confirm !== 'DELETE') return bad('Type DELETE to confirm.');
+    const where = b.keep_orders ? "WHERE source != 'order'" : '';
+    const atts = (await D.prepare(`SELECT attachment FROM acc_entries ${where ? where + " AND attachment != ''" : "WHERE attachment != ''"}`).all()).results.map(r => r.attachment).filter(Boolean);
+    const n = (await D.prepare(`SELECT COUNT(*) AS n FROM acc_entries ${where}`).first()).n;
+    const ops = [D.prepare(`DELETE FROM acc_entries ${where}`)];
+    if (b.reset_opening) ops.push(D.prepare('UPDATE acc_accounts SET opening = 0'));
+    if (b.reset_target_log) ops.push(D.prepare('DELETE FROM acc_target_log'));
+    await D.batch(ops);
+    for (const k of atts.slice(0, 500)) await env.IMAGES.delete(k);
+    await audit(env, user, 'DELETE', 'acc', 'reset', `Deleted ${n} entries${b.keep_orders ? ' (kept website sales)' : ''}${b.reset_opening ? ', opening balances set to 0' : ''}${b.reset_target_log ? ', target history cleared' : ''}`);
+    return json({ ok: true, deleted: n });
+  }
   if (sub === 'backfill' && m === 'POST') {
     const list = (await D.prepare("SELECT * FROM orders WHERE status = 'delivered' AND order_no NOT IN (SELECT order_no FROM acc_entries WHERE order_no IS NOT NULL)").all()).results;
     for (const o of list) await postOrderSale(env, o);
@@ -1918,7 +1933,7 @@ async function accEntries(env, url) {
   const [rows, tot] = await Promise.all([
     env.DB.prepare(`SELECT e.*, c.name AS category, c.kind, a.name AS account, t.name AS to_account, p.name AS partner FROM acc_entries e
       LEFT JOIN acc_categories c ON c.id = e.category_id LEFT JOIN acc_accounts a ON a.id = e.account_id LEFT JOIN acc_accounts t ON t.id = e.to_account_id
-      LEFT JOIN acc_partners p ON p.id = e.partner_id ${W} ORDER BY e.day DESC, e.id DESC LIMIT 500`).bind(...args).all(),
+      LEFT JOIN acc_partners p ON p.id = e.partner_id ${W} ORDER BY e.day DESC, e.id DESC LIMIT ${g('all') === '1' ? 20000 : 500}`).bind(...args).all(),
     env.DB.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN type = 'in' THEN amount END), 0) AS inn, COALESCE(SUM(CASE WHEN type = 'out' THEN amount END), 0) AS outt FROM acc_entries e ${W}`).bind(...args).first()
   ]);
   return json({ rows: rows.results, total: tot.n, sumIn: tot.inn, sumOut: tot.outt });

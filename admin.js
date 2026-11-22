@@ -23,6 +23,9 @@
     return fmtWhen(s);
   };
 
+  let orderChannel = '', orderDue = false;
+  const CH = { website: 'Website', shop: 'Shop', facebook: 'Facebook', whatsapp: 'WhatsApp', phone: 'Phone', other: 'Other' };
+  const dueOf = o => o.delivery_mode === 'handover' && o.status !== 'cancelled' ? Math.max(0, o.total - (o.paid_amount || 0)) : 0;
   let categories = [], products = [], orderFilter = '', orderQuery = '', orderFrom = '', orderTo = '', orderCustom = false, lastOrders = [];
   let viewTimer = null;
   let integ = { steadfast: false, sms: false, bkash: false, bdcourier: false };
@@ -60,7 +63,7 @@
   // কে লগইন করেছে আর কোন অংশ দেখতে পারবে
   let ME = { user: { name: '', role: 'super' }, perms: { read: [], write: [] } };
   const canRead = r => ME.perms.read.includes(r), canWrite = r => ME.perms.write.includes(r);
-  const TAB_PERM = { dashboard: 'stats', orders: 'orders', abandoned: 'abandoned', chats: 'chats', customers: 'customers', accounts: 'acc', reports: 'report',
+  const TAB_PERM = { sales: 'sales', dashboard: 'stats', orders: 'orders', abandoned: 'abandoned', chats: 'chats', customers: 'customers', accounts: 'acc', reports: 'report',
     products: 'products', custom: 'custom', gallery: 'gallery', categories: 'categories', banners: 'banners', coupons: 'coupons', reviews: 'reviews',
     settings: 'settings', team: 'users', activity: 'audit' };
   function applyPerms() {
@@ -137,7 +140,7 @@
       products: viewProducts, product: () => viewProductEdit(arg), custom: viewCustom, gallery: viewGallery,
       categories: viewCategories, settings: viewSettings, coupons: viewCoupons, reviews: viewReviews,
       abandoned: viewAbandoned, banners: viewBanners, reports: viewReports,
-      accounts: () => viewAccounts(arg || 'overview'), team: viewTeam, activity: viewActivity
+      accounts: () => viewAccounts(arg || 'overview'), team: viewTeam, activity: viewActivity, sales: () => viewSales(arg)
     };
     (views[tab] || viewDashboard)().catch(fail);
   }
@@ -175,6 +178,19 @@
         <div class="kpi"><span>Last 30 days</span><strong>${money(d.month.rev)}</strong><small>${plural(d.month.n, 'order')}</small></div>
         <a class="kpi kpi-link" href="#reports"><span>Profit this month</span><strong class="${d.monthProfit.net < 0 ? 'neg' : ''}">${money(d.monthProfit.net)}</strong><small>${d.monthProfit.margin}% margin · avg order ${money(aov)}${d.monthProfit.missing ? ` · <em class="down">${d.monthProfit.missing} without cost</em>` : ''}</small></a>
       </div>
+      <div class="dash-top">
+        <section class="card goal-card"><div class="card-head"><h2>This month’s target</h2>${canWrite('goals') ? '<button class="text-btn" id="setGoal">Set target</button>' : ''}</div>
+          ${d.goal.target ? `<p class="goal-num"><b>${money(d.goal.sold)}</b> of ${money(d.goal.target)}</p><div class="cap-bar"><i style="--w:${Math.min(100, Math.round(d.goal.sold / d.goal.target * 100))}%"></i></div>
+            <p class="muted small">${d.goal.sold >= d.goal.target ? '<b class="up">Target reached, Alhamdulillah!</b>' : `${money(d.goal.target - d.goal.sold)} to go · about <b>${money(d.goal.perDay)}</b> a day for the ${d.goal.daysLeft + 1} days left`}</p>`
+            : '<p class="muted small">Set a monthly sales target to see progress here.</p>'}</section>
+        <section class="card"><h2>Today by channel</h2>${d.todayChannels.length ? `<ul class="mini-list">${d.todayChannels.map(c => `<li><div class="exp-li"><span><b class="chtag ch-${esc(c.ch)}">${esc(c.label)}</b> <span class="muted">${c.n} sale${c.n > 1 ? 's' : ''}</span></span><b>${money(c.v)}</b></div></li>`).join('')}</ul>` : '<p class="muted small">No sales yet today.</p>'}
+          ${canWrite('sales') ? '<a class="btn primary sm" href="#sales/new">+ New sale</a>' : ''}</section>
+        <section class="card"><h2>Compared with last month</h2><p class="muted small">1st to today, against the same days last month</p>
+          <div class="mom"><div><span>Sales</span><b>${money(d.mom.revenue)}</b>${d.mom.revenuePct == null ? '' : `<em class="${d.mom.revenuePct >= 0 ? 'up' : 'down'}">${d.mom.revenuePct >= 0 ? '▲' : '▼'} ${Math.abs(d.mom.revenuePct)}%</em>`}</div>
+          <div><span>Orders</span><b>${d.mom.orders}</b>${d.mom.ordersPct == null ? '' : `<em class="${d.mom.ordersPct >= 0 ? 'up' : 'down'}">${d.mom.ordersPct >= 0 ? '▲' : '▼'} ${Math.abs(d.mom.ordersPct)}%</em>`}</div></div></section>
+        <section class="card"><div class="card-head"><h2>Due from customers</h2><a class="link" href="#orders" id="dueLink">See all</a></div><p class="goal-num"><b class="${d.dueTotal.v ? 'down' : ''}">${money(d.dueTotal.v)}</b></p><p class="muted small">${d.dueTotal.n} sale${d.dueTotal.n === 1 ? '' : 's'} not fully paid</p></section>
+      </div>
+      ${d.followUps.length ? `<section class="card follow-card"><h2>Follow up today</h2><ul class="mini-list">${d.followUps.map(f => `<li><div class="exp-li"><span><b>${esc(f.name || f.phone)}</b> <span class="muted">${esc(f.phone)}</span><span class="block">${esc(f.follow_note || '')}${f.follow_up < todayBD() ? ` <em class="down">since ${esc(f.follow_up)}</em>` : ''}</span></span><span class="r"><a class="btn ghost sm" href="tel:${esc(f.phone)}">Call</a> <a class="btn ghost sm" href="https://wa.me/88${esc(f.phone)}" target="_blank" rel="noopener">WhatsApp</a></span></div></li>`).join('')}</ul></section>` : ''}
       <div class="dash-grid"><div class="dash-col">
         <section class="card chart-card"><div class="card-head"><h2>Sales, last 30 days</h2><span class="muted small">Cancelled orders not counted</span></div>${salesChart(d.daily)}</section>
         <section class="card"><div class="card-head"><h2>Best sellers, 30 days</h2></div>
@@ -190,12 +206,19 @@
           ${statusTotal ? `<h3 class="sub">All orders by status</h3><div class="stbar">${STATUSES.map(([k, l]) => d.statuses[k] ? `<span class="st-${k}" style="flex:${d.statuses[k]}" title="${l}: ${d.statuses[k]}"></span>` : '').join('')}</div>
           <ul class="stlegend">${STATUSES.map(([k, l]) => `<li><i class="st-${k}"></i>${l} <b>${d.statuses[k] || 0}</b></li>`).join('')}</ul>` : ''}
         </section>
+        ${d.topCustomers.length ? `<section class="card"><div class="card-head"><h2>Top customers this month</h2><a class="link" href="#customers">Customers</a></div><ul class="mini-list">${d.topCustomers.map(c => `<li><div class="exp-li"><span><b>${esc(c.name)}</b><span class="muted block">${esc(c.phone)} · ${c.n} order${c.n > 1 ? 's' : ''}</span></span><b>${money(c.v)}</b></div></li>`).join('')}</ul></section>` : ''}
         <section class="card"><div class="card-head"><h2>Recent orders</h2><a class="link" href="#orders">All orders</a></div>
           ${d.recent.length ? `<ul class="mini-list">${d.recent.map(o => `<li><a href="#orders" data-q="${esc(o.order_no)}"><span><strong>${esc(o.order_no)}</strong><span class="muted block">${esc(o.name)} · ${ago(o.created_at)}</span></span><span class="r">${money(o.total)}<span class="badge st-${o.status}">${stLabel(o.status)}</span></span></a></li>`).join('')}</ul>` : '<p class="muted">No orders yet.</p>'}
         </section>
       </div></div>`;
+    bindDash();
   }
 
+  function bindDash() {
+    const g = $('#setGoal');
+    if (g) g.onclick = async () => { const v = prompt('Sales target for this month (BDT)', ''); if (v == null) return; try { await api('goals', { method: 'PUT', body: { month_target: v } }); toast('Target saved'); route(); } catch (e) { fail(e); } };
+    const dl = $('#dueLink'); if (dl) dl.onclick = () => { setTimeout(() => {}, 0); orderDue = true; };
+  }
   function salesChart(daily) {
     const days = [];
     const now = new Date(Date.now() + 6 * 3600e3);
@@ -222,6 +245,8 @@
     if (orderFrom) qs.set('from', orderFrom);
     if (orderTo) qs.set('to', orderTo);
     if (orderCustom) qs.set('custom', '1');
+    if (orderChannel) qs.set('channel', orderChannel);
+    if (orderDue) qs.set('due', '1');
     const { orders, counts } = await api('orders?' + qs);
     lastOrders = orders;
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
@@ -232,7 +257,10 @@
         <input class="search" id="orderSearch" type="search" placeholder="Search order no, phone or name" value="${esc(orderQuery)}">
         <label class="date-f">From <input type="date" id="fFrom" value="${esc(orderFrom)}"></label>
         <label class="date-f">To <input type="date" id="fTo" value="${esc(orderTo)}"></label>
+        <select id="fChannel"><option value="">All channels</option>${Object.entries(CH).map(([k, l]) => `<option value="${k}" ${orderChannel === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <label class="check"><input type="checkbox" id="fDue" ${orderDue ? 'checked' : ''}> With due only</label>
         <label class="check"><input type="checkbox" id="fCustom" ${orderCustom ? 'checked' : ''}> Custom thobes only</label>
+        ${canWrite('sales') ? '<a class="btn primary sm" href="#sales/new">+ New sale</a>' : ''}
       </div>
       <div class="chips">
         <button class="chip" data-st="" aria-pressed="${!orderFilter}">All <b>${total}</b></button>
@@ -251,11 +279,20 @@
     $('#fFrom').addEventListener('change', e => { orderFrom = e.target.value; reload(); });
     $('#fTo').addEventListener('change', e => { orderTo = e.target.value; reload(); });
     $('#fCustom').addEventListener('change', e => { orderCustom = e.target.checked; reload(); });
+    $('#fChannel').addEventListener('change', e => { orderChannel = e.target.value; reload(); });
+    $('#fDue').addEventListener('change', e => { orderDue = e.target.checked; reload(); });
+    $('#main').querySelectorAll('[data-due]').forEach(b => b.addEventListener('click', () => openCollect(orders.find(o => String(o.id) === b.dataset.due), reload)));
+    $('#main').querySelectorAll('[data-oedit]').forEach(b => b.addEventListener('click', () => openOrderEdit(orders.find(o => String(o.id) === b.dataset.oedit), reload)));
     $('#csvBtn').addEventListener('click', () => downloadCsv(orders));
     $('#main').querySelectorAll('.status-select').forEach(sel => sel.addEventListener('change', async () => {
       const prev = sel.dataset.prev;
-      if (sel.value === 'cancelled' && !confirm('Cancel this order? Its items will be added back to stock.')) { sel.value = prev; return; }
-      try { await api('orders/' + sel.dataset.id, { method: 'PUT', body: { status: sel.value } }); toast('Order marked ' + stLabel(sel.value)); reload(); pollBadges(); }
+      let extra = {};
+      if (sel.value === 'cancelled') {
+        const kind = prompt('Why is it cancelled? Type 1 or 2:\n1 = Cancelled before delivery\n2 = Customer returned it\n\nItems go back into stock. Money entries for this order are removed.', '1');
+        if (kind !== '1' && kind !== '2') { sel.value = prev; return; }
+        extra = { cancel_type: kind === '2' ? 'returned' : 'cancelled', cancel_reason: prompt('Reason (optional)', '') || '' };
+      }
+      try { await api('orders/' + sel.dataset.id, { method: 'PUT', body: { status: sel.value, ...extra } }); toast('Order marked ' + stLabel(sel.value)); reload(); pollBadges(); }
       catch (e) { sel.value = prev; fail(e); }
     }));
     $('#main').querySelectorAll('.note-form').forEach(fm => fm.addEventListener('submit', async e => {
@@ -327,10 +364,10 @@
     const hasCustom = o.items.some(l => l.custom);
     return `<details class="order st-${o.status}">
       <summary>
-        <div class="o-main"><strong>${esc(o.order_no)}${hasCustom ? ' <b class="tag">Custom</b>' : ''}</strong><span class="muted">${fmtWhen(o.created_at)}</span></div>
+        <div class="o-main"><strong>${esc(o.order_no)}${hasCustom ? ' <b class="tag">Custom</b>' : ''} <b class="chtag ch-${esc(o.channel || 'website')}">${CH[o.channel || 'website'] || o.channel}</b></strong><span class="muted">${fmtWhen(o.created_at)}${o.sold_by && o.channel !== 'website' ? ' · ' + esc(o.sold_by) : ''}</span></div>
         <div class="o-cust">${esc(o.name)}<span class="muted">${esc(phone)} ${histChip(o.history)}</span></div>
         <div class="o-total">${money(o.total)}<span class="muted">${o.payment === 'bkash_online' ? (o.paid ? '<b class="paid">bKash paid</b>' : 'bKash, not paid yet') : o.payment === 'bkash' ? 'bKash/Nagad' : 'COD'}</span></div>
-        <span class="badge st-${o.status}">${stLabel(o.status)}</span>
+        <span class="badge st-${o.status}">${o.status === 'cancelled' && o.cancel_type === 'returned' ? 'Returned' : stLabel(o.status)}</span>${dueOf(o) ? `<span class="duetag">Due ${money(dueOf(o))}</span>` : ''}
       </summary>
       <div class="o-body">
         <div class="o-cols">
@@ -362,6 +399,8 @@
           ${o.items.some(l => l.custom) ? `<button class="btn ghost sm" type="button" data-tailor="${o.id}">Print tailor sheet</button>` : ''}
           ${o.consignment ? `<button class="btn ghost sm" type="button" data-cstatus="${o.id}">Check courier status</button>`
             : o.status !== 'cancelled' && o.status !== 'delivered' ? `<button class="btn ghost sm" type="button" data-courier="${o.id}">Send to Steadfast</button>` : ''}
+          ${dueOf(o) && canWrite('due') ? `<button class="btn primary sm" type="button" data-due="${o.id}">Collect due ${money(dueOf(o))}</button>` : ''}
+          ${['super', 'admin'].includes(ME.user.role) ? `<button class="btn ghost sm" type="button" data-oedit="${o.id}">Edit order</button>` : ''}
           <span class="spacer"></span>
           <button class="btn ghost sm danger-t" type="button" data-odel="${o.id}">Delete order</button>
         </div>
@@ -543,7 +582,9 @@
     ['once', 'Bought once', c => c.orders - c.cancelled === 1],
     ['custom', 'Custom thobe buyers', c => c.custom_orders > 0],
     ['inactive', 'No order in 90 days', c => Date.now() - toDate(c.last_order) > 90 * DAY],
-    ['risk', 'Many cancels', c => c.cancelled >= 2 && c.cancelled >= c.delivered]
+    ['risk', 'Many cancels', c => c.cancelled >= 2 && c.cancelled >= c.delivered],
+    ['due', 'Has due', c => c.due > 0],
+    ['follow', 'Follow up', c => c.follow_up && c.follow_up <= todayBD()]
   ];
   const segOf = c => SEGMENTS.filter(([k, , f]) => k !== 'all' && k !== 'once' && f(c)).map(([k, l]) => `<b class="seg seg-${k}">${l}</b>`).join('');
 
@@ -574,13 +615,13 @@
         <label class="date-f">Sort <select id="custSort">${[['last', 'Latest order'], ['orders', 'Most orders'], ['spent', 'Most spent'], ['name', 'Name']].map(([k, l]) => `<option value="${k}" ${custSort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <span class="muted small">${list.length} shown · ${money(total)} spent in total</span></div>
       ${list.length ? `<div class="card flush"><table class="tbl cust-tbl">
-        <thead><tr><th class="ck"><input type="checkbox" id="selAll" aria-label="Select all shown" ${list.length && list.every(c => custSel.has(c.phone)) ? 'checked' : ''}></th><th>Customer</th><th class="r">Times bought</th><th class="r">Spent</th><th>Last order</th><th></th></tr></thead>
+        <thead><tr><th class="ck"><input type="checkbox" id="selAll" aria-label="Select all shown" ${list.length && list.every(c => custSel.has(c.phone)) ? 'checked' : ''}></th><th>Customer</th><th class="r">Times bought</th><th class="r">Spent</th><th class="r">Due</th><th>Last order</th><th></th></tr></thead>
         <tbody>${list.slice(0, 500).map(c => `<tr class="${custSel.has(c.phone) ? 'sel' : ''}">
           <td class="ck"><input type="checkbox" data-sel="${c.phone}" ${custSel.has(c.phone) ? 'checked' : ''} aria-label="Select ${esc(c.name)}"></td>
           <td><button class="linklike" data-cust="${c.phone}"><strong>${esc(c.name)}</strong></button> ${segOf(c)}${(c.tags || '').split(', ').filter(Boolean).map(tg => `<b class="seg tag"># ${esc(tg)}</b>`).join('')}
             <span class="muted block">${esc(c.phone)} · ${esc((c.address || '').slice(0, 60))}</span></td>
-          <td class="r"><strong class="big">${c.orders - c.cancelled}</strong><span class="muted block small">${c.delivered} delivered${c.cancelled ? ` · ${c.cancelled} cancelled` : ''}</span></td>
-          <td class="r">${money(c.spent)}</td><td>${fmtWhen(c.last_order)}<span class="muted block small">${ago(c.last_order)}</span></td>
+          <td class="r"><strong class="big">${c.orders - c.cancelled}</strong><span class="muted block small">${c.delivered} delivered${c.cancelled ? ` · ${c.cancelled - (c.returned || 0)} cancelled` : ''}${c.returned ? ` · ${c.returned} returned` : ''}</span></td>
+          <td class="r">${money(c.spent)}</td><td class="r ${c.due ? 'down' : 'muted'}">${c.due ? money(c.due) : '—'}</td><td>${fmtWhen(c.last_order)}<span class="muted block small">${ago(c.last_order)}</span></td>
           <td class="r nowrap"><a class="btn ghost sm" href="tel:${esc(c.phone)}">Call</a> <a class="btn ghost sm" href="https://wa.me/88${esc(c.phone)}" target="_blank" rel="noopener">WhatsApp</a></td></tr>`).join('')}</tbody></table></div>
         ${list.length > 500 ? '<p class="muted small">Showing the first 500. Use search or a group to narrow down.</p>' : ''}`
         : '<p class="empty">No customers in this group yet.</p>'}
@@ -622,15 +663,22 @@
     dlg.innerHTML = `<div class="adlg-body">
       <div class="adlg-head"><div><h2>${esc(c.name)}</h2><p class="muted">${esc(phone)} · customer since ${fmtWhen(c.first_order)}</p></div><button class="icon" data-x aria-label="Close">×</button></div>
       <div class="cstats"><div><strong>${c.orders - c.cancelled}</strong><span>times bought</span></div><div><strong>${money(c.spent)}</strong><span>spent</span></div>
-        <div><strong>${c.orders - c.cancelled ? money(Math.round(c.spent / (c.orders - c.cancelled))) : '—'}</strong><span>per order</span></div><div><strong>${c.cancelled}</strong><span>cancelled</span></div></div>
+        <div><strong>${c.orders - c.cancelled ? money(Math.round(c.spent / (c.orders - c.cancelled))) : '—'}</strong><span>per order</span></div><div><strong>${c.cancelled - (c.returned || 0)} / ${c.returned || 0}</strong><span>cancelled / returned</span></div>
+        <div class="${c.due ? 'due-stat' : ''}"><strong>${money(c.due || 0)}</strong><span>due now</span></div></div>
+      <p class="cust-facts">${d.favSizes.length ? `<span>Usual size: <b>${d.favSizes.map(x => esc(x.name)).join(', ')}</b></span>` : ''}${d.favColors.length ? `<span>Colours: <b>${d.favColors.map(x => esc(x.name)).join(', ')}</b></span>` : ''}
+        <span>Buys via: ${(c.channels || 'website').split(',').map(k => `<b class="chtag ch-${esc(k)}">${CH[k] || esc(k)}</b>`).join(' ')}</span><span>Last bought ${c.last_order ? ago(c.last_order) : '—'}</span>
+        <span>Trust: ${c.cancelled >= 2 && c.cancelled >= c.delivered ? '<b class="down">Be careful</b>' : '<b class="up">Good</b>'}</span></p>
       <div class="row-btns"><a class="btn ghost sm" href="tel:${esc(phone)}">Call</a><a class="btn ghost sm" href="https://wa.me/88${esc(phone)}" target="_blank" rel="noopener">WhatsApp</a>
         <button class="btn ghost sm" id="cSms">Send SMS</button><div class="fraud" data-fraud="${esc(phone)}"><button class="btn ghost sm" type="button">Check courier record</button></div></div>
       <form id="noteForm" class="note-form"><div class="g2"><label class="field"><span>Tags <small>comma separated, like Eid buyer, wholesale</small></span><input name="tags" value="${esc(d.tags)}"></label>
-        <label class="field"><span>Private note</span><input name="note" value="${esc(d.note)}" placeholder="Likes slim fit, calls after 6 pm…"></label></div>
+        <label class="field"><span>Private note</span><input name="note" value="${esc(d.note)}" placeholder="Likes slim fit, calls after 6 pm…"></label>
+        <label class="field"><span>Follow up on <small>shows on the dashboard that day</small></span><input type="date" name="follow_up" value="${esc(d.follow_up || '')}"></label>
+        <label class="field"><span>Follow-up reason</span><input name="follow_note" value="${esc(d.follow_note || '')}" placeholder="Call before Eid with new colours"></label></div>
         <button class="btn primary sm" type="submit">Save</button></form>
       ${d.profile && d.profile.meas ? `<p class="small"><b>Saved measurements:</b> ${esc(Object.entries(JSON.parse(d.profile.meas)).map(([k, v]) => `${k} ${v}`).join(', '))}</p>` : ''}
       <h3 class="sub">What they bought</h3>
       ${d.bought.length ? `<ul class="bought">${d.bought.map(b => `<li><span>${esc(b.name)}</span><b>× ${b.qty}</b></li>`).join('')}</ul>` : '<p class="muted">Nothing delivered yet.</p>'}
+      <h3 class="sub">Timeline</h3>${custTimeline(d)}
       <h3 class="sub">Orders</h3>
       <ul class="mini-list">${d.orders.map(o => `<li><a href="#orders" data-q="${esc(o.order_no)}"><span><strong>${esc(o.order_no)}</strong><span class="muted block">${fmtWhen(o.created_at)} · ${o.items.reduce((s, l) => s + l.qty, 0)} pcs${o.coupon ? ' · ' + esc(o.coupon) : ''}</span></span><span class="r">${money(o.total)}<span class="badge st-${o.status}">${stLabel(o.status)}</span></span></a></li>`).join('')}</ul>
     </div>`;
@@ -641,10 +689,22 @@
     $('#noteForm').addEventListener('submit', async e => {
       e.preventDefault();
       try {
-        const r = await api('customer', { method: 'PUT', body: { phone, tags: e.target.tags.value, note: e.target.note.value } });
+        const r = await api('customer', { method: 'PUT', body: { phone, tags: e.target.tags.value, note: e.target.note.value, follow_up: e.target.follow_up.value, follow_note: e.target.follow_note.value } });
         c.tags = r.tags; c.note = e.target.note.value; toast('Customer saved'); dlg.close(); drawCustomers();
       } catch (err) { fail(err); }
     });
+  }
+
+  // অর্ডার, বিক্রি, বাকি আদায়, চ্যাট, রিভিউ: তারিখ অনুযায়ী এক তালিকায়
+  function custTimeline(d) {
+    const ev = [];
+    d.orders.forEach(o => ev.push({ at: o.created_at, icon: o.status === 'cancelled' ? '✕' : '🛍', cls: o.status === 'cancelled' ? 'tl-x' : 'tl-o',
+      html: `<b>${o.status === 'cancelled' ? (o.cancel_type === 'returned' ? 'Returned' : 'Cancelled') : (o.channel === 'website' ? 'Website order' : (CH[o.channel] || 'Sale'))}</b> ${esc(o.order_no)} · ${money(o.total)}${o.due ? ` · <span class="down">due ${money(o.due)}</span>` : ''}<span class="muted block">${o.items.map(l => `${esc(l.custom ? 'Custom thobe' : l.name)} ${esc(l.size)} ×${l.qty}`).join(', ')}</span>` }));
+    (d.payments || []).filter(p => /^Due collected/.test(p.note || '')).forEach(p => ev.push({ at: p.created_at, icon: '৳', cls: 'tl-p', html: `<b>Paid due</b> ${money(p.amount)} into ${esc(p.account || '')} <span class="muted">${esc(p.ref || '')}</span>` }));
+    (d.chats || []).forEach(c => ev.push({ at: c.created_at, icon: '💬', cls: 'tl-c', html: `<b>Chat</b> <span class="muted">${esc((c.last_msg || '').slice(0, 80))}</span>` }));
+    (d.reviews || []).forEach(r => ev.push({ at: r.created_at, icon: '★', cls: 'tl-r', html: `<b>Review ${'★'.repeat(r.rating)}</b> on ${esc(r.product_code)} <span class="muted">${esc((r.body || '').slice(0, 80))}</span>` }));
+    ev.sort((a, b) => toDate(b.at) - toDate(a.at));
+    return ev.length ? `<ul class="timeline">${ev.slice(0, 40).map(e => `<li class="${e.cls}"><i>${e.icon}</i><div>${e.html}<time>${fmtWhen(e.at)}</time></div></li>`).join('')}</ul>` : '<p class="muted small">Nothing yet.</p>';
   }
 
   async function openSmsDialog(people) {
@@ -1466,7 +1526,7 @@
             <label class="field"><span>Note <small>optional</small></span><input name="note" placeholder="Eid campaign"></label></div>
             <button class="btn primary sm" type="submit">Add expense</button></form>
           ${d.expenseByCat.length ? `<ul class="exp-cats">${d.expenseByCat.map(c => `<li><span>${esc(c.category)}</span><i style="--w:${pct(c.amount, d.expenses)}%"></i><b>${money(c.amount)}</b></li>`).join('')}</ul>` : ''}
-          ${d.expenseList.length ? `<ul class="mini-list exp-list">${d.expenseList.map(e => `<li><div class="exp-li"><span><strong>${esc(e.category)}</strong><span class="muted block">${esc(e.day)}${e.note ? ' · ' + esc(e.note) : ''}</span></span><span class="r">${money(e.amount)}<button class="text-btn" data-expdel="${e.id}">Delete</button></span></div></li>`).join('')}</ul>` : '<p class="muted small">No expenses in this period.</p>'}
+          ${d.expenseList.length ? `<ul class="mini-list exp-list">${d.expenseList.map(e => `<li><div class="exp-li"><span><strong>${esc(e.category)}</strong><span class="muted block">${esc(e.day)}${e.note ? ' · ' + esc(e.note) : ''}</span></span><span class="r">${money(e.amount)}<span><button class="text-btn" data-expedit="${e.id}">Edit</button> · <button class="text-btn" data-expdel="${e.id}">Delete</button></span></span></div></li>`).join('')}</ul>` : '<p class="muted small">No expenses in this period.</p>'}
         </section>
         <section class="card"><h2>Your costs</h2><p class="muted small">Used to work out profit. Only you see these.</p>
           <form id="finForm"><div class="g2">
@@ -1475,10 +1535,12 @@
             <label class="field"><span>COD fee (%) <small>courier keeps this from cash</small></span><input type="number" name="cod_fee_pct" min="0" max="5" step="0.1" value="${fin.cod_fee_pct}"></label>
             <label class="field"><span>Tailoring cost per custom thobe</span><input type="number" name="tailoring_cost" min="0" value="${fin.tailoring_cost == null ? '' : fin.tailoring_cost}" placeholder="e.g. 600"></label></div>
             <button class="btn primary sm" type="submit">Save costs</button></form></section>
-      </div></div></div>`;
+      </div></div><dialog class="adlg" id="entryDlg"></dialog></div>`;
     const root = $('#main .vroot');
     root.addEventListener('click', async e => {
       const pb = e.target.closest('[data-period]'); if (pb) { rep.period = pb.dataset.period; viewReports().catch(fail); return; }
+      const ed = e.target.closest('[data-expedit]');
+      if (ed) { try { ACC = await api('acc/meta'); const r = await api('acc/entries?q=TX-' + ed.dataset.expedit); if (r.rows[0]) openEntry(r.rows[0]); } catch (err) { fail(err); } return; }
       const del = e.target.closest('[data-expdel]');
       if (del && confirm('Delete this expense?')) { try { await api('expenses/' + del.dataset.expdel, { method: 'DELETE' }); toast('Expense deleted'); viewReports().catch(fail); } catch (err) { fail(err); } }
     });
@@ -2030,6 +2092,202 @@
     const f = $('#actF'); let t;
     f.onchange = () => { actF = Object.fromEntries(new FormData(f)); viewActivity().catch(fail); };
     f.q.oninput = () => { clearTimeout(t); t = setTimeout(() => { actF = Object.fromEntries(new FormData(f)); viewActivity().catch(fail); }, 400); };
+  }
+
+  // ================= SALES (দোকান, ফেসবুক, হোয়াটসঅ্যাপের বিক্রি + রিপোর্ট) =================
+  let salesPeriod = 'month', salesFrom = '', salesTo = '';
+  async function viewSales(arg) {
+    if (arg === 'new') return saleForm();
+    let [from, to] = periodRange(salesPeriod === 'custom' ? 'custom' : salesPeriod);
+    if (salesPeriod === 'custom') { from = salesFrom || from; to = salesTo || to; }
+    if (salesPeriod === 'today') from = to = todayBD();
+    const d = await api(`sales/report?from=${from}&to=${to}`);
+    const diff = (a, b) => b ? Math.round((a - b) / b * 100) : null;
+    const dr = diff(d.revenue, d.prev.revenue), dn = diff(d.orders, d.prev.orders);
+    const arrow = v => v == null ? '' : `<em class="${v >= 0 ? 'up' : 'down'}">${v >= 0 ? '▲' : '▼'} ${Math.abs(v)}%</em> vs before`;
+    const bars = (list, labelFn, valFn = x => x.value, cnt = x => x.n) => { const max = Math.max(1, ...list.map(valFn)); return list.length ? `<ul class="hbars">${list.map(x => `<li><span>${labelFn(x)}</span><i style="--w:${Math.round(valFn(x) / max * 100)}%"></i><b>${money(valFn(x))}</b><small>${cnt(x)}</small></li>`).join('')}</ul>` : '<p class="muted small">No sales.</p>'; };
+    const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], wmax = Math.max(1, ...d.weekdays), hmax = Math.max(1, ...d.hours);
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Sales</h1><p class="muted">Website, shop, Facebook and WhatsApp sales together. ${from} to ${to}</p></div>
+        <div class="head-tools"><button class="btn ghost sm" onclick="print()">Print</button>${canWrite('sales') ? '<a class="btn primary" href="#sales/new">+ New sale</a>' : ''}</div></div>
+      <div class="filters"><div class="chips">${[['today', 'Today'], ['month', 'This month'], ['last', 'Last month'], ['30', 'Last 30 days'], ['year', 'This year'], ['custom', 'Choose dates']].map(([k, l]) => `<button class="chip" data-sp="${k}" aria-pressed="${salesPeriod === k}">${l}</button>`).join('')}</div>
+        ${salesPeriod === 'custom' ? `<label class="date-f">From <input type="date" id="sFrom" value="${from}"></label><label class="date-f">To <input type="date" id="sTo" value="${to}"></label>` : ''}</div>
+      <div class="kpis kpis-5">
+        <div class="kpi kpi-net"><span>Sales</span><strong>${money(d.revenue)}</strong><small>${arrow(dr) || '&nbsp;'}</small></div>
+        <div class="kpi"><span>Number of sales</span><strong>${d.orders}</strong><small>${d.pieces} pieces${arrow(dn) ? ' · ' + arrow(dn) : ''}</small></div>
+        <div class="kpi"><span>Average sale</span><strong>${money(d.avg)}</strong><small>discounts given ${money(d.discount)}</small></div>
+        <div class="kpi"><span>Cancelled / returned</span><strong>${d.cancelled} / ${d.returned}</strong><small>${d.cancelRate}% of orders · ${money(d.cancelledValue)}</small></div>
+        <a class="kpi kpi-link" href="#orders" data-due-link><span>Due from customers</span><strong class="${d.due.total ? 'down' : ''}">${money(d.due.total)}</strong><small>${d.due.list.length} sale${d.due.list.length === 1 ? '' : 's'} not fully paid</small></a>
+      </div>
+      <div class="dash-grid"><div class="dash-col">
+        <section class="card"><div class="card-head"><h2>Sales by day</h2></div>${salesDaily(d.daily, from, to)}</section>
+        <section class="card"><div class="card-head"><h2>Products sold</h2></div>
+          ${d.products.length ? `<table class="tbl"><thead><tr><th>Product</th><th class="r">Pieces</th><th class="r">Sales</th></tr></thead><tbody>${d.products.slice(0, 15).map(x => `<tr><td>${esc(x.name)}<span class="muted block">${esc(x.code)}${x.color ? ' · ' + esc(x.color) : ''}</span></td><td class="r">${x.qty}</td><td class="r">${money(x.value)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No sales in this period.</p>'}</section>
+        <section class="card"><div class="card-head"><h2>Top customers</h2><a class="link" href="#customers">All customers</a></div>
+          ${d.topCustomers.length ? `<ul class="mini-list">${d.topCustomers.map(c => `<li><div class="exp-li"><span><button class="linklike" data-cust="${esc(c.phone)}"><strong>${esc(c.name)}</strong></button><span class="muted block">${esc(c.phone)} · ${c.orders} sale${c.orders > 1 ? 's' : ''}</span></span><b>${money(c.value)}</b></div></li>`).join('')}</ul>` : '<p class="muted">No customers with a mobile number yet.</p>'}</section>
+      </div><div class="dash-col">
+        <section class="card"><h2>Where sales came from</h2>${bars(d.channels, x => `<b class="chtag ch-${x.key}">${esc(x.label)}</b>`)}</section>
+        <section class="card"><h2>Sizes</h2>${bars(d.sizes, x => esc(x.key))}</section>
+        <section class="card"><h2>Colours</h2>${bars(d.colors.slice(0, 8), x => esc(x.key))}</section>
+        <section class="card"><h2>Payment</h2>${bars(d.payments, x => esc(x.key))}</section>
+        <section class="card"><h2>Who sold</h2>${bars(d.staff, x => esc(x.key))}</section>
+        <section class="card"><h2>Busy days and hours</h2>
+          <div class="wd">${WD.map((w, i) => `<div><i style="--h:${Math.round(d.weekdays[i] / wmax * 100)}%"></i><span>${w}</span><small>${d.weekdays[i]}</small></div>`).join('')}</div>
+          <div class="hrs">${d.hours.map((h, i) => `<i title="${i}:00 · ${h} sales" style="--o:${(h / hmax).toFixed(2)}"></i>`).join('')}</div><p class="muted small">Darker = more sales. 12 am on the left, 11 pm on the right.</p></section>
+        ${d.due.list.length ? `<section class="card"><h2>Due from customers</h2><ul class="mini-list">${d.due.list.slice(0, 12).map(x => `<li><div class="exp-li"><span><strong>${esc(x.name)}</strong><span class="muted block">${esc(x.order_no)} · ${esc(x.day)}${x.phone ? ' · ' + esc(x.phone) : ''}</span></span><span class="r"><b class="down">${money(x.due)}</b>${canWrite('due') ? `<button class="text-btn" data-collect="${x.id}">Collect</button>` : ''}</span></div></li>`).join('')}</ul></section>` : ''}
+      </div></div><dialog class="adlg" id="custDlg"></dialog><dialog class="adlg" id="smsDlg"></dialog><dialog class="adlg" id="payDlg"></dialog></div>`;
+    const root = $('#main .vroot');
+    root.addEventListener('click', async e => {
+      const sp = e.target.closest('[data-sp]'); if (sp) { salesPeriod = sp.dataset.sp; viewSales().catch(fail); return; }
+      const cu = e.target.closest('[data-cust]'); if (cu) { if (!custList.length) custList = await api('customers'); openCustomer(cu.dataset.cust); return; }
+      const co = e.target.closest('[data-collect]'); if (co) { const x = d.due.list.find(y => String(y.id) === co.dataset.collect); openCollect({ ...x, paid_amount: x.total - x.due }, () => viewSales().catch(fail)); return; }
+      if (e.target.closest('[data-due-link]')) { orderDue = true; orderFilter = ''; orderQuery = ''; orderChannel = ''; }
+    });
+    ['sFrom', 'sTo'].forEach(id => { const el = $('#' + id); if (el) el.onchange = () => { salesFrom = $('#sFrom').value; salesTo = $('#sTo').value; viewSales().catch(fail); }; });
+  }
+  function salesDaily(daily, from, to) {
+    const days = [];
+    for (let t = Date.parse(from); t <= Date.parse(to) && days.length < 400; t += 864e5) days.push(new Date(t).toISOString().slice(0, 10));
+    const by = Object.fromEntries(daily.map(r => [r.key, r])), W = 720, H = 200, pad = 34, n = days.length, bw = (W - pad) / Math.max(1, n);
+    const max = Math.max(1, ...daily.map(r => r.value)), y = v => H - 24 - v / max * (H - 40);
+    let s = [0, .5, 1].map(f => `<line x1="${pad}" x2="${W}" y1="${y(max * f)}" y2="${y(max * f)}" class="gl"/><text x="${pad - 6}" y="${y(max * f) + 4}" class="ax" text-anchor="end">${max * f >= 1000 ? Math.round(max * f / 1000) + 'k' : Math.round(max * f)}</text>`).join('');
+    days.forEach((d, i) => { const r = by[d] || { n: 0, value: 0 }, x = pad + i * bw;
+      s += `<g><title>${d}: ${r.n} sales, ${money(r.value)}</title><rect x="${x + bw * .12}" y="${y(r.value)}" width="${Math.max(1, bw * .76)}" height="${H - 24 - y(r.value)}" rx="2" class="${d === todayBD() ? 'today' : ''}"/></g>`;
+      if (n <= 31 ? (i % 5 === 0 || i === n - 1) : d.endsWith('-01')) s += `<text x="${x + bw / 2}" y="${H - 6}" class="ax" text-anchor="middle">${d.slice(5).replace('-', '/')}</text>`; });
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Sales by day">${s}</svg></div>`;
+  }
+
+  // ---------- নতুন বিক্রি ফর্ম ----------
+  let SM = null;
+  async function saleForm() {
+    SM = await api('sales/meta');
+    if (!custList.length) { try { custList = await api('customers'); } catch (e) { custList = []; } }
+    const st = { lines: [], payments: [{ account_id: (SM.accounts.find(a => a.kind === 'cash') || SM.accounts[0] || {}).id, amount: '' }] };
+    $('#main').innerHTML = `<div class="vroot"><div class="page-head"><div><h1>New sale</h1><p class="muted">For sales in the shop, on Facebook, WhatsApp or by phone. Stock, accounts and the customer’s history update by themselves.</p></div><a class="btn ghost" href="#sales">Sales report</a></div>
+      <form id="saleF" class="sale-grid" autocomplete="off">
+        <div class="sale-left">
+          <section class="card"><h2>Items</h2>
+            <div class="pick"><input type="search" id="pSearch" placeholder="Search product name, code or colour"><div id="pList" class="plist"></div></div>
+            <div id="lines"></div>
+            <button type="button" class="text-btn" id="addOther">+ Add an item that is not in the shop list</button></section>
+          <section class="card"><h2>Customer</h2><div class="g2">
+            <label class="field"><span>Mobile <small>finds old customers</small></span><input name="phone" inputmode="numeric" placeholder="01XXXXXXXXX" list="custPhones"></label>
+            <label class="field"><span>Name</span><input name="name" placeholder="Walk-in customer"></label></div>
+            <div id="custHint" class="muted small"></div>
+            <datalist id="custPhones">${custList.slice(0, 500).map(c => `<option value="${esc(c.phone)}">${esc(c.name)}</option>`).join('')}</datalist>
+            <div class="g2"><label class="field"><span>Where was it sold</span><select name="channel">${Object.entries(SM.channels).filter(([k]) => k !== 'website').map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
+              <label class="field"><span>How it reaches the customer</span><select name="delivery_mode"><option value="handover">Customer took it now</option><option value="courier">Send by courier</option></select></label></div>
+            <div id="addrBox" hidden><label class="field"><span>Address</span><textarea name="address" rows="2"></textarea></label>
+              <div class="g2"><label class="field"><span>Area</span><select name="area"><option value="inside">Inside Dhaka</option><option value="outside">Outside Dhaka</option></select></label>
+              <label class="field"><span>Delivery charge</span><input type="number" name="delivery" min="0" value="0"></label></div></div>
+            <div class="g2"><label class="field"><span>Date <small>change it to enter an old sale</small></span><input type="date" name="day" value="${todayBD()}"></label>
+              <label class="field"><span>Sold by</span><input name="sold_by" value="${esc(ME.user.name)}"></label></div>
+            <label class="field"><span>Note <small>optional</small></span><input name="note"></label></section>
+        </div>
+        <aside class="sale-right card">
+          <h2>Payment</h2>
+          <p class="row"><span>Subtotal</span><b id="sSub">৳ 0</b></p>
+          <label class="field inline"><span>Discount</span><input type="number" name="discount" min="0" value="0"></label>
+          <p class="row big"><span>Total</span><b id="sTot">৳ 0</b></p>
+          <div id="pays"></div>
+          <button type="button" class="text-btn" id="addPay">+ Split payment (cash + bKash…)</button>
+          <p class="row"><span>Due (baki)</span><b id="sDue">৳ 0</b></p>
+          <p class="err" id="sErr" hidden></p>
+          <button class="btn primary block" type="submit" id="sSave">Save sale</button>
+          <p class="muted small">Leave the amount lower than the total if the customer will pay the rest later.</p>
+        </aside>
+      </form></div>`;
+    const f = $('#saleF');
+    const tot = () => { const sub = st.lines.reduce((t, l) => t + (Number(l.price) || 0) * (Number(l.qty) || 0), 0); const dis = Math.min(sub, Number(f.discount.value) || 0), del = f.delivery_mode.value === 'courier' ? Number(f.delivery.value) || 0 : 0; return { sub, total: sub - dis + del }; };
+    const drawLines = () => {
+      $('#lines').innerHTML = st.lines.length ? `<table class="tbl lines"><thead><tr><th>Item</th><th>Size</th><th class="r">Qty</th><th class="r">Price</th><th class="r">Amount</th><th></th></tr></thead><tbody>${st.lines.map((l, i) => `<tr>
+        <td>${l.sizeId ? `<b>${esc(l.name)}</b><span class="muted block">${esc(l.code)} · ${esc(l.color)}</span>` : `<input data-l="${i}" data-k="name" value="${esc(l.name)}" placeholder="Item name">`}</td>
+        <td>${l.sizeId ? `<select data-l="${i}" data-k="sizeId">${l.sizes.map(z => `<option value="${z.id}" ${z.id === l.sizeId ? 'selected' : ''} ${z.stock <= 0 && z.id !== l.sizeId ? 'disabled' : ''}>${esc(z.label)} (${z.stock})</option>`).join('')}</select>` : '<span class="muted">—</span>'}</td>
+        <td class="r"><input type="number" min="1" class="num" data-l="${i}" data-k="qty" value="${l.qty}"></td>
+        <td class="r"><input type="number" min="0" class="num" data-l="${i}" data-k="price" value="${l.price}"></td>
+        <td class="r">${money((Number(l.price) || 0) * (Number(l.qty) || 0))}</td><td><button type="button" class="icon" data-rm="${i}" aria-label="Remove">×</button></td></tr>`).join('')}</tbody></table>` : '<p class="muted small empty-lines">Search above and tap a product to add it.</p>';
+      sync();
+    };
+    const drawPays = () => {
+      $('#pays').innerHTML = st.payments.map((p, i) => `<div class="payrow"><select data-p="${i}" data-k="account_id">${SM.accounts.map(a => `<option value="${a.id}" ${Number(p.account_id) === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
+        <input type="number" min="0" data-p="${i}" data-k="amount" value="${p.amount}" placeholder="Amount received">${i ? `<button type="button" class="icon" data-prm="${i}">×</button>` : ''}</div>`).join('');
+    };
+    const sync = () => {
+      const t = tot();
+      if (st.payments.length === 1 && !st.payTouched) { st.payments[0].amount = t.total || ''; const inp = $('#pays input'); if (inp) inp.value = st.payments[0].amount; }
+      const paid = st.payments.reduce((s2, p) => s2 + (Number(p.amount) || 0), 0);
+      $('#sSub').textContent = money(t.sub); $('#sTot').textContent = money(t.total); $('#sDue').textContent = money(Math.max(0, t.total - paid));
+      $('#sDue').className = t.total - paid > 0 ? 'down' : '';
+    };
+    const plist = q => {
+      q = q.trim().toLowerCase();
+      const list = SM.products.filter(p => !q || [p.name, p.code, p.color].join(' ').toLowerCase().includes(q)).slice(0, 12);
+      $('#pList').innerHTML = list.map(p => `<button type="button" class="pitem" data-add="${p.id}"><span class="pi-img" style="--c:${esc(p.hex || '#ddd')}">${p.image ? `<img src="${esc(p.image)}" alt="">` : ''}</span><span><b>${esc(p.name)}</b><small>${esc(p.code)} · ${esc(p.color || '')} · ${money(p.price)}</small><small>${p.sizes.map(z => `${esc(z.label)}:${z.stock}`).join(' ')}</small></span></button>`).join('') || '<p class="muted small">No product found.</p>';
+    };
+    plist('');
+    $('#pSearch').oninput = e => plist(e.target.value);
+    $('#pList').onclick = e => { const b = e.target.closest('[data-add]'); if (!b) return; const p = SM.products.find(x => x.id === Number(b.dataset.add)); const z = p.sizes.find(x => x.stock > 0) || p.sizes[0];
+      if (!z) return toast('This product has no sizes.', true);
+      st.lines.push({ sizeId: z.id, sizes: p.sizes, name: p.name, code: p.code, color: p.color, qty: 1, price: p.price }); drawLines(); };
+    $('#addOther').onclick = () => { st.lines.push({ name: '', qty: 1, price: '' }); drawLines(); };
+    $('#lines').oninput = e => { const el = e.target, i = el.dataset.l; if (i == null) return; const k = el.dataset.k; st.lines[i][k] = k === 'sizeId' ? Number(el.value) : el.value;
+      if (k !== 'name') { const cell = el.closest('tr').children[4]; cell.textContent = money((Number(st.lines[i].price) || 0) * (Number(st.lines[i].qty) || 0)); } sync(); };
+    $('#lines').onchange = $('#lines').oninput;
+    $('#lines').onclick = e => { const b = e.target.closest('[data-rm]'); if (b) { st.lines.splice(Number(b.dataset.rm), 1); drawLines(); } };
+    $('#pays').oninput = e => { const el = e.target, i = el.dataset.p; if (i == null) return; st.payments[i][el.dataset.k] = el.value; if (el.dataset.k === 'amount') st.payTouched = true; sync(); };
+    $('#pays').onchange = $('#pays').oninput;
+    $('#pays').onclick = e => { const b = e.target.closest('[data-prm]'); if (b) { st.payments.splice(Number(b.dataset.prm), 1); drawPays(); sync(); } };
+    $('#addPay').onclick = () => { st.payTouched = true; st.payments.push({ account_id: (SM.accounts.find(a => a.kind === 'bkash') || SM.accounts[0]).id, amount: '' }); drawPays(); };
+    f.discount.oninput = sync; f.delivery.oninput = sync;
+    f.delivery_mode.onchange = () => { $('#addrBox').hidden = f.delivery_mode.value !== 'courier'; sync(); };
+    f.phone.oninput = () => { const ph = f.phone.value.replace(/\D/g, '').slice(-11), c = custList.find(x => x.phone === ph);
+      $('#custHint').innerHTML = c ? `Returning customer: <b>${esc(c.name)}</b> · bought ${c.orders - c.cancelled} times · spent ${money(c.spent)}${c.due ? ` · <b class="down">due ${money(c.due)}</b>` : ''}` : (ph.length === 11 ? 'New customer' : '');
+      if (c && !f.name.value) f.name.value = c.name; if (c && c.address && !f.address.value) f.address.value = c.address; };
+    drawLines(); drawPays();
+    f.onsubmit = async e => {
+      e.preventDefault();
+      const body = { ...Object.fromEntries(new FormData(f)), items: st.lines.map(l => l.sizeId ? { sizeId: l.sizeId, qty: l.qty, price: l.price } : { name: l.name, qty: l.qty, price: l.price }), payments: st.payments };
+      $('#sSave').disabled = true; $('#sErr').hidden = true;
+      try { const r = await api('sales', { method: 'POST', body }); toast(`Sale ${r.orderNo} saved${r.due ? ` · due ${money(r.due)}` : ''}`); location.hash = 'sales'; }
+      catch (err) { $('#sErr').textContent = err.message; $('#sErr').hidden = false; $('#sSave').disabled = false; }
+    };
+  }
+
+  // ---------- বাকি আদায় ----------
+  async function openCollect(o, done) {
+    let dlg = $('#payDlg'); if (!dlg) { dlg = document.createElement('dialog'); dlg.className = 'adlg'; dlg.id = 'payDlg'; $('#main').appendChild(dlg); }
+    if (!SM) SM = await api('sales/meta');
+    const due = o.total - (o.paid_amount || 0);
+    dlg.innerHTML = `<form class="adlg-body" id="colF"><div class="adlg-head"><div><h2>Collect due</h2><p class="muted small">${esc(o.order_no)} · ${esc(o.name)} · total ${money(o.total)} · paid ${money(o.paid_amount || 0)}</p></div><button type="button" class="icon" data-x>×</button></div>
+      <div class="g2"><label class="field big-amt"><span>Amount received</span><input type="number" name="amount" min="1" max="${due}" value="${due}"></label>
+      <label class="field"><span>Came into</span><select name="account_id">${SM.accounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
+      <label class="field"><span>Date</span><input type="date" name="day" value="${todayBD()}"></label></div>
+      <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn primary">Save</button></div></form>`;
+    dlg.showModal(); dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
+    $('#colF').onsubmit = async e => { e.preventDefault(); try { const r = await api('due/' + o.id, { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast(r.due ? `Saved. Still due ${money(r.due)}` : 'Paid in full'); dlg.close(); done && done(); } catch (err) { fail(err); } };
+  }
+
+  // ---------- অর্ডার এডিট (সুপার/অ্যাডমিন) ----------
+  function openOrderEdit(o, done) {
+    let dlg = $('#oeDlg'); if (!dlg) { dlg = document.createElement('dialog'); dlg.className = 'adlg wide'; dlg.id = 'oeDlg'; $('#main').appendChild(dlg); }
+    const items = o.items.map(l => ({ ...l }));
+    dlg.innerHTML = `<form class="adlg-body" id="oeF"><div class="adlg-head"><div><h2>Edit ${esc(o.order_no)}</h2><p class="muted small">Every change is written in the activity log with the old values.</p></div><button type="button" class="icon" data-x>×</button></div>
+      <div class="g3"><label class="field"><span>Name</span><input name="name" value="${esc(o.name || '')}"></label><label class="field"><span>Mobile</span><input name="phone" value="${esc(o.phone || '')}"></label>
+        <label class="field"><span>Date</span><input type="date" name="day" value="${toDate(o.created_at).toISOString().slice(0, 10)}"></label></div>
+      <label class="field"><span>Address</span><input name="address" value="${esc(o.address || '')}"></label>
+      <div class="g3"><label class="field"><span>Area</span><select name="area"><option value="inside" ${o.area !== 'outside' ? 'selected' : ''}>Inside Dhaka</option><option value="outside" ${o.area === 'outside' ? 'selected' : ''}>Outside Dhaka</option></select></label>
+        <label class="field"><span>Channel</span><select name="channel">${Object.entries(CH).map(([k, l]) => `<option value="${k}" ${(o.channel || 'website') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="field"><span>Sold by</span><input name="sold_by" value="${esc(o.sold_by || '')}"></label></div>
+      <table class="tbl lines"><thead><tr><th>Item</th><th>Size</th><th class="r">Qty</th><th class="r">Price</th></tr></thead><tbody>${items.map((l, i) => `<tr><td>${l.sizeId ? esc(l.name) : `<input data-i="${i}" data-k="name" value="${esc(l.name)}">`}<span class="muted block">${esc(l.color || '')}</span></td><td>${esc(l.size)}</td>
+        <td class="r"><input type="number" min="0" class="num" data-i="${i}" data-k="qty" value="${l.qty}"></td><td class="r"><input type="number" min="0" class="num" data-i="${i}" data-k="price" value="${l.price}"></td></tr>`).join('')}</tbody></table>
+      <p class="muted small">Set quantity to 0 to remove an item. Stock changes by the difference.</p>
+      <div class="g3"><label class="field"><span>Delivery charge</span><input type="number" min="0" name="delivery" value="${o.delivery}"></label><label class="field"><span>Discount</span><input type="number" min="0" name="discount" value="${o.discount || 0}"></label>
+        <label class="field"><span>Note</span><input name="note" value="${esc(o.note || '')}"></label></div>
+      <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn primary">Save changes</button></div></form>`;
+    dlg.showModal(); dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
+    $('#oeF').oninput = e => { const i = e.target.dataset.i; if (i != null) items[i][e.target.dataset.k] = e.target.dataset.k === 'name' ? e.target.value : Number(e.target.value); };
+    $('#oeF').onsubmit = async e => { e.preventDefault(); const body = { ...Object.fromEntries(new FormData(e.target)), items };
+      try { const r = await api(`orders/${o.id}/edit`, { method: 'PUT', body }); toast('Order updated · total ' + money(r.total) + (r.refund ? ` · customer paid ${money(r.refund)} more, give it back` : '')); dlg.close(); done && done(); } catch (err) { fail(err); } };
   }
 
   // ---------- start ----------

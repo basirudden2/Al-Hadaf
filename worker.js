@@ -119,7 +119,15 @@ const MIGRATIONS = [
   `ALTER TABLE fabrics ADD COLUMN stock REAL`,
   `ALTER TABLE fabrics ADD COLUMN per_thobe REAL DEFAULT 3.5`,
   `ALTER TABLE products ADD COLUMN cost INTEGER`,
-  `ALTER TABLE fabrics ADD COLUMN cost_per_gaj REAL`
+  `ALTER TABLE fabrics ADD COLUMN cost_per_gaj REAL`,
+  `ALTER TABLE orders ADD COLUMN channel TEXT DEFAULT 'website'`,
+  `ALTER TABLE orders ADD COLUMN delivery_mode TEXT DEFAULT 'courier'`,
+  `ALTER TABLE orders ADD COLUMN paid_amount INTEGER DEFAULT 0`,
+  `ALTER TABLE orders ADD COLUMN sold_by TEXT DEFAULT ''`,
+  `ALTER TABLE orders ADD COLUMN cancel_type TEXT DEFAULT ''`,
+  `ALTER TABLE orders ADD COLUMN cancel_reason TEXT DEFAULT ''`,
+  `ALTER TABLE customer_notes ADD COLUMN follow_up TEXT DEFAULT ''`,
+  `ALTER TABLE customer_notes ADD COLUMN follow_note TEXT DEFAULT ''`
 ];
 
 const DEFAULT_SHOP = {
@@ -256,9 +264,9 @@ const ROLES = {
   super: 'Super admin', admin: 'Admin', accountant: 'Accountant', staff: 'Order staff', view: 'View only'
 };
 const AREAS = {
-  sales: ['orders', 'courier', 'chats', 'abandoned', 'customers', 'customer', 'fraud', 'stock-alerts'],
+  sales: ['orders', 'courier', 'chats', 'abandoned', 'customers', 'customer', 'fraud', 'stock-alerts', 'sales', 'due'],
   catalog: ['products', 'categories', 'custom', 'fabrics', 'gallery', 'upload', 'banners', 'reviews', 'coupons', 'sms', 'settings'],
-  money: ['stats', 'report', 'finance', 'expenses', 'acc'],
+  money: ['stats', 'report', 'finance', 'expenses', 'acc', 'goals'],
   people: ['users', 'audit']
 };
 function can(user, res, method) {
@@ -468,8 +476,21 @@ async function adminApi(req, env, path, m, url, ctx, user) {
     if (m === 'PUT' && id) return saveProduct(req, env, id, ctx);
     if (m === 'DELETE' && id) return deleteProduct(env, id);
   }
+  if (res === 'sales') {
+    const sub = path.split('/')[1];
+    if (sub === 'report' && m === 'GET') return salesReport(env, url);
+    if (sub === 'meta' && m === 'GET') return json(await salesMeta(env));
+    if (!sub && m === 'POST') return createSale(req, env, user, ctx);
+  }
+  if (res === 'due' && m === 'POST' && id) return collectDue(req, env, id, user);
+  if (res === 'goals') {
+    if (m === 'GET') return json(await getGoals(env));
+    if (m === 'PUT') { const b = await readJson(req) || {}; const v = { month_target: Math.max(0, int(b.month_target)) };
+      await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('goals', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(JSON.stringify(v)).run(); return json(v); }
+  }
   if (res === 'orders') {
     if (m === 'GET') return adminOrders(env, url);
+    if (m === 'PUT' && id && path.split('/')[2] === 'edit') return editOrder(req, env, id, user);
     if (m === 'PUT' && id) return updateOrder(req, env, id, ctx);
     if (m === 'DELETE' && id) return deleteOrder(env, id);
   }
@@ -861,6 +882,9 @@ async function adminOrders(env, url) {
   if (ORDER_STATUSES.includes(status)) { where.push('status = ?'); args.push(status); }
   if (q) { where.push('(order_no LIKE ? OR phone LIKE ? OR name LIKE ?)'); args.push(`%${q}%`, `%${q}%`, `%${q}%`); }
   if (url.searchParams.get('custom') === '1') where.push(`items LIKE '%"custom":true%'`);
+  const ch = str(url.searchParams.get('channel'), 20);
+  if (ch) { where.push("COALESCE(channel, 'website') = ?"); args.push(ch); }
+  if (url.searchParams.get('due') === '1') where.push("delivery_mode = 'handover' AND status != 'cancelled' AND total > paid_amount");
   const from = str(url.searchParams.get('from'), 10), to = str(url.searchParams.get('to'), 10);
   if (/^\d{4}-\d{2}-\d{2}$/.test(from)) { where.push("date(created_at, '+6 hours') >= ?"); args.push(from); }
   if (/^\d{4}-\d{2}-\d{2}$/.test(to)) { where.push("date(created_at, '+6 hours') <= ?"); args.push(to); }
@@ -886,6 +910,7 @@ async function updateOrder(req, env, id, ctx) {
     return json({ ok: true });
   }
   if (!ORDER_STATUSES.includes(b.status)) return bad('Unknown status.');
+  if (b.status === 'cancelled') await env.DB.prepare('UPDATE orders SET cancel_type = ?, cancel_reason = ? WHERE id = ?').bind(b.cancel_type === 'returned' ? 'returned' : 'cancelled', str(b.cancel_reason, 200), id).run();
   const items = JSON.parse(o.items || '[]').filter(l => l.sizeId);
   const ops = [env.DB.prepare('UPDATE orders SET status = ? WHERE id = ?').bind(b.status, id)];
   // বাতিল করলে স্টক ফেরত যায়; আবার চালু করলে স্টক আবার কমে (নিজের মাপের জুব্বার স্টক নেই)
@@ -900,22 +925,26 @@ async function updateOrder(req, env, id, ctx) {
   }
   await env.DB.batch(ops);
   if (b.status !== o.status) await orderSms(env, ctx, o, b.status);
-  if (b.status === 'delivered') await postOrderSale(env, { ...o, status: 'delivered' });
-  else if (o.status === 'delivered') await env.DB.prepare("DELETE FROM acc_entries WHERE order_no = ? AND source = 'order'").bind(o.order_no).run();
+  if (b.status === 'delivered' && o.delivery_mode !== 'handover') await postOrderSale(env, { ...o, status: 'delivered' });
+  else if (o.status === 'delivered' && o.delivery_mode !== 'handover') await env.DB.prepare("DELETE FROM acc_entries WHERE order_no = ? AND source = 'order'").bind(o.order_no).run();
+  // বাতিল বা ফেরত: এই বিক্রির সব টাকার এন্ট্রি মুছে যায় (টাকা ফেরত দেওয়া হয়েছে ধরে)
+  if (b.status === 'cancelled') await env.DB.prepare("DELETE FROM acc_entries WHERE source = 'order' AND (order_no = ? OR ref = ?)").bind(o.order_no, o.order_no).run();
   return json({ ok: true });
 }
 
 async function deleteOrder(env, id) {
-  const o = await env.DB.prepare('SELECT status, items, coupon FROM orders WHERE id = ?').bind(id).first();
+  const o = await env.DB.prepare('SELECT status, items, coupon, delivery_mode FROM orders WHERE id = ?').bind(id).first();
   if (!o) return bad('Order not found.', 404);
-  const ops = [env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(id)];
-  // এখনো পাঠানো হয়নি এমন অর্ডার মুছলে স্টক ফেরত যায়
-  if (o.status === 'new' || o.status === 'confirmed') {
+  const ops = [];
+  // এখনো পাঠানো হয়নি এমন অর্ডার, বা দোকানের বিক্রি ভুল করে দেওয়া হলে, মুছলে স্টক ফেরত যায়
+  if (o.status === 'new' || o.status === 'confirmed' || (o.delivery_mode === 'handover' && o.status !== 'cancelled')) {
     const all = JSON.parse(o.items || '[]');
     all.filter(l => l.sizeId).forEach(l => ops.push(env.DB.prepare('UPDATE product_sizes SET stock = stock + ? WHERE id = ?').bind(l.qty, l.sizeId)));
     all.filter(l => l.custom && l.details && l.details.fabricId && l.details.perThobe).forEach(l => ops.push(env.DB.prepare('UPDATE fabrics SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL').bind(l.details.perThobe * l.qty, l.details.fabricId)));
   }
   if (o.coupon) ops.push(env.DB.prepare('UPDATE coupons SET used = MAX(0, used - 1) WHERE code = ?').bind(o.coupon));
+  ops.push(env.DB.prepare("DELETE FROM acc_entries WHERE source = 'order' AND (order_no = (SELECT order_no FROM orders WHERE id = ?) OR ref = (SELECT order_no FROM orders WHERE id = ?))").bind(id, id));
+  ops.push(env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(id));
   await env.DB.batch(ops);
   return json({ ok: true });
 }
@@ -1193,6 +1222,7 @@ async function adminStats(env) {
   return json({
     today: t, yesterday: y, week: w, month: m, all,
     daily: daily.results, statuses: Object.fromEntries(statuses.results.map(s => [s.status, s.n])),
+    ...(await dashExtras(env)),
     recent: recent.results, lowStock: low.results, lowFabrics, monthProfit: { net: mp.net, gross: mp.gross, margin: mp.margin, missing: mp.missingCost.length }, unreadChats: chats.n, customers: customers.n, customOpen: customOpen.n,
     top: Object.values(top).sort((a, b) => b.qty - a.qty).slice(0, 6)
   });
@@ -1203,12 +1233,15 @@ async function adminCustomers(env, url) {
     env.DB.prepare(`SELECT substr(phone, -11) AS phone, MAX(name) AS name, MAX(address) AS address, COUNT(*) AS orders,
       SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered, SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
       SUM(CASE WHEN status != 'cancelled' THEN total ELSE 0 END) AS spent, MIN(created_at) AS first_order, MAX(created_at) AS last_order,
-      SUM(CASE WHEN items LIKE '%"custom":true%' THEN 1 ELSE 0 END) AS custom_orders
-      FROM orders GROUP BY substr(phone, -11) ORDER BY last_order DESC LIMIT 3000`).all(),
+      SUM(CASE WHEN items LIKE '%"custom":true%' THEN 1 ELSE 0 END) AS custom_orders,
+      SUM(CASE WHEN status = 'cancelled' AND cancel_type = 'returned' THEN 1 ELSE 0 END) AS returned,
+      SUM(CASE WHEN delivery_mode = 'handover' AND status != 'cancelled' AND total > paid_amount THEN total - paid_amount ELSE 0 END) AS due,
+      GROUP_CONCAT(DISTINCT COALESCE(channel, 'website')) AS channels
+      FROM orders WHERE phone IS NOT NULL AND phone != '' GROUP BY substr(phone, -11) ORDER BY last_order DESC LIMIT 3000`).all(),
     env.DB.prepare('SELECT * FROM customer_notes').all()
   ]);
   const byPhone = Object.fromEntries(notes.results.map(n => [n.phone, n]));
-  return json(rows.results.map(r => ({ ...r, note: (byPhone[r.phone] || {}).note || '', tags: (byPhone[r.phone] || {}).tags || '' })));
+  return json(rows.results.map(r => ({ ...r, note: (byPhone[r.phone] || {}).note || '', tags: (byPhone[r.phone] || {}).tags || '', follow_up: (byPhone[r.phone] || {}).follow_up || '', follow_note: (byPhone[r.phone] || {}).follow_note || '' })));
 }
 
 // ================= v6 =================
@@ -1314,19 +1347,31 @@ async function notifyBackInStock(env, ctx, origin, code, name, size) {
 async function adminCustomer(env, url) {
   const phone = last11(url.searchParams.get('phone'));
   const [orders, note, profile] = await Promise.all([
-    env.DB.prepare('SELECT id, order_no, created_at, status, total, items, payment, coupon, discount FROM orders WHERE substr(phone, -11) = ? ORDER BY id DESC').bind(phone).all(),
+    env.DB.prepare("SELECT id, order_no, created_at, status, cancel_type, total, items, payment, coupon, discount, COALESCE(channel, 'website') AS channel, delivery_mode, paid_amount, sold_by FROM orders WHERE substr(phone, -11) = ? ORDER BY id DESC").bind(phone).all(),
     env.DB.prepare('SELECT * FROM customer_notes WHERE phone = ?').bind(phone).first(),
     env.DB.prepare('SELECT * FROM profiles WHERE phone = ?').bind(phone).first()
   ]);
-  const bought = {};
+  const bought = {}, sizes = {}, colors = {};
   orders.results.forEach(o => { if (o.status === 'cancelled') return; JSON.parse(o.items || '[]').forEach(l => {
     const k = l.custom ? 'Custom thobe · ' + l.color : `${l.name} · ${l.color} · ${l.size}`;
     bought[k] = (bought[k] || 0) + l.qty;
+    if (!l.custom && l.size && l.size !== '-') sizes[l.size] = (sizes[l.size] || 0) + l.qty;
+    if (l.color) colors[l.color] = (colors[l.color] || 0) + l.qty;
   }); });
+  const top = m => Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => ({ name: k, qty: n }));
+  // টাইমলাইন: অর্ডার/বিক্রি, চ্যাট, রিভিউ, বাকি আদায়
+  const [chats, revs, pays] = await Promise.all([
+    env.DB.prepare("SELECT id, created_at, last_msg, status FROM chats WHERE substr(replace(phone, '+', ''), -11) = ? ORDER BY id DESC LIMIT 20").bind(phone).all(),
+    env.DB.prepare('SELECT created_at, product_code, rating, body, status FROM reviews WHERE phone = ? ORDER BY id DESC LIMIT 20').bind(phone).all(),
+    env.DB.prepare(`SELECT e.created_at, e.amount, e.ref, e.note, a.name AS account FROM acc_entries e LEFT JOIN acc_accounts a ON a.id = e.account_id
+      WHERE e.source = 'order' AND e.ref IN (SELECT order_no FROM orders WHERE substr(phone, -11) = ?) ORDER BY e.id DESC LIMIT 50`).bind(phone).all()
+  ]);
   return json({
     phone, note: note ? note.note : '', tags: note ? note.tags : '', profile: profile || null,
-    orders: orders.results.map(o => ({ ...o, items: JSON.parse(o.items || '[]') })),
-    bought: Object.entries(bought).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty)
+    follow_up: note ? note.follow_up || '' : '', follow_note: note ? note.follow_note || '' : '',
+    orders: orders.results.map(o => ({ ...o, items: JSON.parse(o.items || '[]'), due: o.delivery_mode === 'handover' && o.status !== 'cancelled' ? Math.max(0, o.total - (o.paid_amount || 0)) : 0 })),
+    bought: Object.entries(bought).map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty),
+    favSizes: top(sizes), favColors: top(colors), chats: chats.results, reviews: revs.results, payments: pays.results
   });
 }
 
@@ -1335,8 +1380,9 @@ async function saveCustomerNote(req, env) {
   const phone = last11(b.phone);
   if (!validPhone(phone)) return bad('Invalid phone.');
   const tags = str(b.tags, 200).split(',').map(x => x.trim()).filter(Boolean).slice(0, 10).join(', ');
-  await env.DB.prepare(`INSERT INTO customer_notes (phone, note, tags) VALUES (?,?,?) ON CONFLICT(phone) DO UPDATE SET note = excluded.note, tags = excluded.tags, updated_at = CURRENT_TIMESTAMP`)
-    .bind(phone, str(b.note, 1000), tags).run();
+  const fu = /^\d{4}-\d{2}-\d{2}$/.test(b.follow_up || '') ? b.follow_up : '';
+  await env.DB.prepare(`INSERT INTO customer_notes (phone, note, tags, follow_up, follow_note) VALUES (?,?,?,?,?) ON CONFLICT(phone) DO UPDATE SET note = excluded.note, tags = excluded.tags,
+    follow_up = excluded.follow_up, follow_note = excluded.follow_note, updated_at = CURRENT_TIMESTAMP`).bind(phone, str(b.note, 1000), tags, fu, str(b.follow_note, 200)).run();
   return json({ ok: true, tags });
 }
 
@@ -1797,7 +1843,7 @@ async function postOrderSale(env, o) {
   if (!sales || !acc) return;
   const day = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
   await D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, note, source, order_no, created_by)
-    VALUES (?, 'in', ?, ?, ?, ?, ?, 'order', ?, 'website') ON CONFLICT DO NOTHING`).bind(day, sales.id, o.total, acc.id, o.name || '', 'Website order ' + o.order_no, o.order_no).run();
+    VALUES (?, 'in', ?, ?, ?, ?, ?, 'order', ?, 'website') ON CONFLICT DO NOTHING`).bind(day, sales.id, Math.max(0, o.total - (o.paid_amount || 0)), acc.id, o.name || '', 'Order ' + o.order_no, o.order_no).run();
 }
 
 async function accApi(req, env, parts, m, url, user) {
@@ -2117,4 +2163,221 @@ async function importEntries(req, env, user) {
   }
   await audit(env, user, 'ADD', 'acc', 'import', `Imported ${added}, skipped ${skipped} already there, ${errors.length} with errors`);
   return json({ ok: true, added, skipped, errors: errors.slice(0, 20) });
+}
+
+
+// ================= v11: দোকানের বিক্রি, বাকি, সেলস রিপোর্ট =================
+const CHANNELS = { website: 'Website', shop: 'Shop', facebook: 'Facebook', whatsapp: 'WhatsApp', phone: 'Phone', other: 'Other' };
+const bdNow = () => new Date(Date.now() + 6 * 3600e3);
+async function salesMeta(env) {
+  const D = env.DB;
+  const [prods, sizes, accs] = await Promise.all([
+    D.prepare('SELECT id, code, name_en, color_en, color_hex, price, cost, images FROM products WHERE active = 1 ORDER BY sort, id').all(),
+    D.prepare('SELECT s.id, s.product_id, s.label, s.stock FROM product_sizes s JOIN products p ON p.id = s.product_id WHERE p.active = 1 ORDER BY s.sort, s.id').all(),
+    D.prepare("SELECT id, name, kind FROM acc_accounts WHERE active = 1 AND kind != 'courier' ORDER BY sort, id").all()
+  ]);
+  const by = {};
+  sizes.results.forEach(z => (by[z.product_id] = by[z.product_id] || []).push({ id: z.id, label: z.label, stock: z.stock }));
+  return { channels: CHANNELS, accounts: accs.results,
+    products: prods.results.map(p => ({ id: p.id, code: p.code, name: p.name_en, color: p.color_en, hex: p.color_hex, price: p.price, image: imgs(p.images)[0] ? '/img/' + imgs(p.images)[0] : '', sizes: by[p.id] || [] })) };
+}
+
+// দোকান/ফেসবুক/হোয়াটসঅ্যাপের বিক্রি: অর্ডার হিসেবেই রাখা হয়, তাই রিপোর্ট, কাস্টমার, স্টক, লাভ সব এক জায়গায়
+async function createSale(req, env, user, ctx) {
+  const D = env.DB, b = await readJson(req) || {};
+  const channel = CHANNELS[b.channel] && b.channel !== 'website' ? b.channel : 'shop';
+  const mode = b.delivery_mode === 'courier' ? 'courier' : 'handover';
+  const name = str(b.name, 100) || 'Walk-in customer', phone = str(b.phone, 20).replace(/[\s-]/g, '');
+  if (phone && !/^(?:\+?88)?01[3-9]\d{8}$/.test(phone)) return bad('Mobile number looks wrong. Leave it empty for a walk-in customer.');
+  if (mode === 'courier' && (!phone || str(b.address, 500).length < 5)) return bad('For courier delivery, add the mobile number and address.');
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') ? b.day : bdNow().toISOString().slice(0, 10);
+  const raw = (Array.isArray(b.items) ? b.items : []).slice(0, 40);
+  if (!raw.length) return bad('Add at least one item.');
+  const sizeIds = raw.filter(i => i.sizeId).map(i => int(i.sizeId));
+  const rows = sizeIds.length ? (await D.prepare(`SELECT s.id, s.label, s.stock, p.id AS pid, p.code, p.name_en, p.color_en, p.price, p.cost FROM product_sizes s JOIN products p ON p.id = s.product_id
+    WHERE s.id IN (${sizeIds.map(() => '?').join(',')})`).bind(...sizeIds).all()).results : [];
+  const byId = Object.fromEntries(rows.map(r => [r.id, r]));
+  const lines = [];
+  for (const i of raw) {
+    const qty = Math.min(50, Math.max(1, int(i.qty, 1)));
+    if (i.sizeId) {
+      const r = byId[int(i.sizeId)];
+      if (!r) return bad('A product in the sale was not found.');
+      if (r.stock < qty && !b.allow_negative) return bad(`${r.name_en} ${r.label}: only ${r.stock} in stock.`);
+      lines.push({ sizeId: r.id, productId: r.pid, code: r.code, name: r.name_en, color: r.color_en, size: r.label, qty, price: Math.max(0, int(i.price, r.price)), cost: r.cost == null ? null : r.cost });
+    } else {
+      const nm = str(i.name, 100);
+      if (!nm) continue;
+      lines.push({ code: 'OTHER', name: nm, color: '', size: str(i.size, 30) || '-', qty, price: Math.max(0, int(i.price)), cost: i.cost === '' || i.cost == null ? null : Math.max(0, int(i.cost)), other: true });
+    }
+  }
+  if (!lines.length) return bad('Add at least one item.');
+  const subtotal = lines.reduce((t, l) => t + l.price * l.qty, 0);
+  const delivery = Math.max(0, int(b.delivery)), discount = Math.min(subtotal, Math.max(0, int(b.discount)));
+  const total = subtotal + delivery - discount;
+  const pays = (Array.isArray(b.payments) ? b.payments : []).map(p => ({ account_id: int(p.account_id), amount: Math.max(0, int(p.amount)) })).filter(p => p.amount > 0);
+  const paid = pays.reduce((t, p) => t + p.amount, 0);
+  if (paid > total) return bad('Payment is more than the total.');
+  const accIds = new Set((await D.prepare('SELECT id FROM acc_accounts').all()).results.map(a => a.id));
+  if (pays.some(p => !accIds.has(p.account_id))) return bad('Choose where the money came in.');
+  // স্টক কমানো
+  const st = lines.filter(l => l.sizeId);
+  if (st.length) {
+    const res = await D.batch(st.map(l => D.prepare(`UPDATE product_sizes SET stock = stock - ? WHERE id = ?${b.allow_negative ? '' : ' AND stock >= ?'}`).bind(...(b.allow_negative ? [l.qty, l.sizeId] : [l.qty, l.sizeId, l.qty]))));
+    if (res.some(r => !r.meta.changes)) {
+      const undo = st.filter((l, i) => res[i].meta.changes).map(l => D.prepare('UPDATE product_sizes SET stock = stock + ? WHERE id = ?').bind(l.qty, l.sizeId));
+      if (undo.length) await D.batch(undo);
+      return bad('Some items just ran out of stock. Check the sizes.');
+    }
+  }
+  const orderNo = 'AH' + day.slice(2).replace(/-/g, '') + String(Math.floor(Math.random() * 9000) + 1000);
+  const payKinds = pays.length ? (await D.prepare(`SELECT id, kind FROM acc_accounts WHERE id IN (${pays.map(() => '?').join(',')})`).bind(...pays.map(p => p.account_id)).all()).results : [];
+  const payment = paid >= total && payKinds.every(a => a.kind === 'bkash' || a.kind === 'nagad') && payKinds.length ? 'bkash' : 'cod';
+  const created = `${day} ${bdNow().toISOString().slice(11, 19)}`;
+  const createdUtc = new Date(Date.parse(created.replace(' ', 'T') + 'Z') - 6 * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
+  await D.prepare(`INSERT INTO orders (order_no, created_at, name, phone, address, area, payment, trx, note, items, subtotal, delivery, total, status, lang, discount, channel, delivery_mode, paid_amount, sold_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'en',?,?,?,?,?)`).bind(orderNo, createdUtc, name, phone, str(b.address, 500), b.area === 'outside' ? 'outside' : 'inside', payment, str(b.trx, 40), str(b.note, 500),
+    JSON.stringify(lines), subtotal, delivery, total, mode === 'handover' ? 'delivered' : 'confirmed', discount, channel, mode, paid, str(b.sold_by, 60) || user.name).run();
+  // পাওয়া টাকা হিসাবে জমা (লাভে দুবার গোনা হয় না, কারণ বিক্রি অর্ডার থেকেই গোনা হয়)
+  const salesCat = await D.prepare("SELECT id FROM acc_categories WHERE type = 'in' AND kind = 'revenue' ORDER BY sort, id LIMIT 1").first();
+  if (pays.length) await D.batch(pays.map(p => D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, ref, note, source, created_by) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, 'order', ?)`)
+    .bind(day, salesCat ? salesCat.id : null, p.amount, p.account_id, name, orderNo, `${CHANNELS[channel]} sale ${orderNo}`, user.name)));
+  await audit(env, user, 'ADD', 'sales', orderNo, `${CHANNELS[channel]} sale, ${lines.map(l => `${l.name} ${l.size} ×${l.qty}`).join(', ')}, total ${total}, paid ${paid}${total > paid ? ', due ' + (total - paid) : ''}`);
+  if (phone) await D.prepare("UPDATE abandoned SET status = 'recovered' WHERE phone = ?").bind(phone.replace(/\D/g, '').slice(-11)).run();
+  return json({ ok: true, orderNo, total, paid, due: total - paid });
+}
+
+async function collectDue(req, env, id, user) {
+  const D = env.DB, b = await readJson(req) || {};
+  const o = await D.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+  if (!o) return bad('Order not found.', 404);
+  const due = o.total - (o.paid_amount || 0), amount = Math.max(0, int(b.amount));
+  if (amount <= 0) return bad('Enter the amount received.');
+  if (amount > due) return bad(`Only ${due} is due.`);
+  const acc = await D.prepare('SELECT id FROM acc_accounts WHERE id = ?').bind(int(b.account_id)).first();
+  if (!acc) return bad('Choose where the money came in.');
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') ? b.day : bdNow().toISOString().slice(0, 10);
+  const salesCat = await D.prepare("SELECT id FROM acc_categories WHERE type = 'in' AND kind = 'revenue' ORDER BY sort, id LIMIT 1").first();
+  await D.batch([
+    D.prepare('UPDATE orders SET paid_amount = paid_amount + ? WHERE id = ?').bind(amount, id),
+    D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, ref, note, source, created_by) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, 'order', ?)`)
+      .bind(day, salesCat ? salesCat.id : null, amount, acc.id, o.name || '', o.order_no, 'Due collected ' + o.order_no, user.name)
+  ]);
+  await audit(env, user, 'ADD', 'sales', o.order_no, `Due collected ${amount}, still due ${due - amount}`);
+  return json({ ok: true, due: due - amount });
+}
+
+// সুপার/অ্যাডমিন অর্ডারের সব কিছু বদলাতে পারে: কাস্টমার, ঠিকানা, পণ্য, দাম, ডেলিভারি, ছাড়
+async function editOrder(req, env, id, user) {
+  if (!['super', 'admin'].includes(user.role)) return bad('Only an admin can edit an order.', 403);
+  const D = env.DB, b = await readJson(req) || {};
+  const o = await D.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+  if (!o) return bad('Order not found.', 404);
+  const old = JSON.parse(o.items || '[]');
+  const newItems = (Array.isArray(b.items) ? b.items : old).map((l, i) => {
+    const base = old[i] || {};
+    return { ...base, ...(l.name != null && !base.sizeId ? { name: str(l.name, 100) } : {}), qty: Math.max(0, int(l.qty, base.qty)), price: Math.max(0, int(l.price, base.price)) };
+  }).filter(l => l.qty > 0);
+  if (!newItems.length) return bad('An order needs at least one item. Delete the order instead.');
+  // স্টকের পার্থক্য ঠিক করা (বাতিল অর্ডারে স্টক আগেই ফেরত গেছে)
+  const ops = [];
+  if (o.status !== 'cancelled') {
+    const qtyOf = list => { const m = {}; list.filter(l => l.sizeId).forEach(l => { m[l.sizeId] = (m[l.sizeId] || 0) + l.qty; }); return m; };
+    const a = qtyOf(old), c = qtyOf(newItems);
+    new Set([...Object.keys(a), ...Object.keys(c)]).forEach(k => { const diff = (c[k] || 0) - (a[k] || 0); if (diff) ops.push(D.prepare('UPDATE product_sizes SET stock = stock - ? WHERE id = ?').bind(diff, int(k))); });
+  }
+  const subtotal = newItems.reduce((t, l) => t + l.price * l.qty, 0);
+  const delivery = b.delivery == null ? o.delivery : Math.max(0, int(b.delivery));
+  const discount = b.discount == null ? (o.discount || 0) : Math.min(subtotal, Math.max(0, int(b.discount)));
+  const total = Math.max(0, subtotal + delivery - discount - (o.bundle_off || 0));
+  const phone = b.phone == null ? o.phone : str(b.phone, 20).replace(/[\s-]/g, '');
+  if (phone && !/^(?:\+?88)?01[3-9]\d{8}$/.test(phone)) return bad('Mobile number looks wrong.');
+  const created = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') && b.day !== o.created_at.slice(0, 10) ? b.day + o.created_at.slice(10) : o.created_at;
+  ops.push(D.prepare(`UPDATE orders SET name=?, phone=?, address=?, area=?, note=?, items=?, subtotal=?, delivery=?, discount=?, total=?, channel=?, sold_by=?, created_at=? WHERE id=?`)
+    .bind(str(b.name ?? o.name, 100), phone, str(b.address ?? o.address, 500), b.area === 'outside' ? 'outside' : b.area === 'inside' ? 'inside' : o.area, str(b.note ?? o.note, 500),
+      JSON.stringify(newItems), subtotal, delivery, discount, total, CHANNELS[b.channel] ? b.channel : (o.channel || 'website'), str(b.sold_by ?? o.sold_by, 60), created, id));
+  // ডেলিভারির পর কুরিয়ারের পাওনার এন্ট্রিও নতুন মোট অনুযায়ী
+  ops.push(D.prepare("UPDATE acc_entries SET amount = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE order_no = ? AND source = 'order'").bind(Math.max(0, total - (o.paid_amount || 0)), user.name, o.order_no));
+  await D.batch(ops);
+  await audit(env, user, 'EDIT', 'orders', o.order_no, `Before: ${old.map(l => `${l.name} ${l.size} ×${l.qty} @${l.price}`).join(', ')}; total ${o.total}  →  After: ${newItems.map(l => `${l.name} ${l.size} ×${l.qty} @${l.price}`).join(', ')}; total ${total}`);
+  return json({ ok: true, total, refund: Math.max(0, (o.paid_amount || 0) - total) });
+}
+
+async function getGoals(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'goals'").first();
+  return row ? JSON.parse(row.value) : { month_target: 0 };
+}
+
+// ---------- সেলস রিপোর্ট ----------
+async function salesReport(env, url) {
+  const D = env.DB, ok = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
+  const today = bdNow().toISOString().slice(0, 10);
+  const to = ok(url.searchParams.get('to')) ? url.searchParams.get('to') : today;
+  const from = ok(url.searchParams.get('from')) ? url.searchParams.get('from') : to.slice(0, 8) + '01';
+  const days = Math.round((Date.parse(to) - Date.parse(from)) / 864e5) + 1;
+  const pTo = new Date(Date.parse(from) - 864e5).toISOString().slice(0, 10), pFrom = new Date(Date.parse(from) - days * 864e5).toISOString().slice(0, 10);
+  const BD = "date(created_at, '+6 hours')";
+  const [cur, prev, dueRows] = await Promise.all([
+    D.prepare(`SELECT id, order_no, ${BD} AS day, CAST(strftime('%H', datetime(created_at, '+6 hours')) AS INTEGER) AS hr, CAST(strftime('%w', datetime(created_at, '+6 hours')) AS INTEGER) AS wd,
+      name, phone, status, cancel_type, COALESCE(channel, 'website') AS channel, delivery_mode, payment, paid, paid_amount, sold_by, items, subtotal, delivery, discount, bundle_off, total FROM orders WHERE ${BD} BETWEEN ? AND ? LIMIT 20000`).bind(from, to).all(),
+    D.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS rev FROM orders WHERE status != 'cancelled' AND ${BD} BETWEEN ? AND ?`).bind(pFrom, pTo).first(),
+    D.prepare(`SELECT id, order_no, name, phone, total, paid_amount, ${BD} AS day FROM orders WHERE delivery_mode = 'handover' AND status != 'cancelled' AND total > paid_amount ORDER BY id`).all()
+  ]);
+  const t = { orders: 0, pieces: 0, revenue: 0, discount: 0, cancelled: 0, returned: 0, cancelledValue: 0 };
+  const ch = {}, prod = {}, size = {}, color = {}, staff = {}, pay = {}, dayS = {}, cust = {}, hours = Array(24).fill(0), wdays = Array(7).fill(0);
+  const add = (m, k, n, v) => { m[k] = m[k] || { key: k, n: 0, value: 0 }; m[k].n += n; m[k].value += v; };
+  for (const o of cur.results) {
+    if (o.status === 'cancelled') { if (o.cancel_type === 'returned') t.returned++; else t.cancelled++; t.cancelledValue += o.total; continue; }
+    const items = JSON.parse(o.items || '[]'), pcs = items.reduce((s, l) => s + l.qty, 0);
+    t.orders++; t.pieces += pcs; t.revenue += o.total; t.discount += (o.discount || 0) + (o.bundle_off || 0);
+    add(ch, o.channel, 1, o.total);
+    add(staff, o.channel === 'website' ? 'Website' : (o.sold_by || '—'), 1, o.total);
+    add(pay, o.delivery_mode === 'handover' ? (o.paid_amount >= o.total ? 'Paid in full' : o.paid_amount > 0 ? 'Part paid' : 'Due') : o.payment === 'bkash' || o.paid ? 'bKash / online' : 'Cash on delivery', 1, o.total);
+    add(dayS, o.day, 1, o.total);
+    hours[o.hr] += 1; wdays[o.wd] += 1;
+    if (o.phone) add(cust, String(o.phone).replace(/\D/g, '').slice(-11) + '|' + (o.name || ''), 1, o.total);
+    items.forEach(l => {
+      add(prod, (l.custom ? 'Custom thobe' : l.name) + '|' + (l.custom ? 'CUSTOM' : l.code) + '|' + (l.color || ''), l.qty, l.qty * l.price);
+      if (!l.custom && l.size && l.size !== '-') add(size, l.size, l.qty, l.qty * l.price);
+      if (l.color) add(color, l.color, l.qty, l.qty * l.price);
+    });
+  }
+  const list = m => Object.values(m).sort((a, b) => b.value - a.value);
+  const all = t.orders + t.cancelled + t.returned;
+  return json({
+    from, to, prevFrom: pFrom, prevTo: pTo, ...t, avg: t.orders ? Math.round(t.revenue / t.orders) : 0,
+    cancelRate: all ? Math.round((t.cancelled + t.returned) / all * 1000) / 10 : 0,
+    prev: { orders: prev.n, revenue: prev.rev },
+    channels: list(ch).map(x => ({ ...x, label: CHANNELS[x.key] || x.key })), staff: list(staff), payments: list(pay),
+    products: list(prod).map(x => { const [name, code, colour] = x.key.split('|'); return { name, code, color: colour, qty: x.n, value: x.value }; }),
+    sizes: list(size), colors: list(color), daily: Object.values(dayS).sort((a, b) => a.key < b.key ? -1 : 1),
+    topCustomers: list(cust).slice(0, 10).map(x => { const [phone, name] = x.key.split('|'); return { phone, name, orders: x.n, value: x.value }; }),
+    hours, weekdays: wdays,
+    due: { total: dueRows.results.reduce((s, r) => s + r.total - r.paid_amount, 0), list: dueRows.results.map(r => ({ ...r, due: r.total - r.paid_amount })) }
+  });
+}
+
+// ড্যাশবোর্ডের নতুন অংশ: টার্গেট, আজকের বিক্রি চ্যানেল অনুযায়ী, বাকি, আগের মাসের তুলনা, সেরা কাস্টমার, আজকের ফলো-আপ
+async function dashExtras(env) {
+  const D = env.DB, BD = "date(created_at, '+6 hours')", now = bdNow(), today = now.toISOString().slice(0, 10);
+  const m0 = today.slice(0, 8) + '01', dom = Number(today.slice(8, 10));
+  const pm = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0, 10);
+  const pmSame = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, Math.min(dom, new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)).getUTCDate()))).toISOString().slice(0, 10);
+  const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+  const [goals, todayCh, monthNow, monthPrev, due, topC, fu] = await Promise.all([
+    getGoals(env),
+    D.prepare(`SELECT COALESCE(channel, 'website') AS ch, COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM orders WHERE status != 'cancelled' AND ${BD} = ? GROUP BY ch`).bind(today).all(),
+    D.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM orders WHERE status != 'cancelled' AND ${BD} BETWEEN ? AND ?`).bind(m0, today).first(),
+    D.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM orders WHERE status != 'cancelled' AND ${BD} BETWEEN ? AND ?`).bind(pm, pmSame).first(),
+    D.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(total - paid_amount), 0) AS v FROM orders WHERE delivery_mode = 'handover' AND status != 'cancelled' AND total > paid_amount").first(),
+    D.prepare(`SELECT substr(phone, -11) AS phone, MAX(name) AS name, COUNT(*) AS n, SUM(total) AS v FROM orders WHERE status != 'cancelled' AND phone != '' AND ${BD} BETWEEN ? AND ? GROUP BY substr(phone, -11) ORDER BY v DESC LIMIT 5`).bind(m0, today).all(),
+    D.prepare("SELECT n.phone, n.follow_up, n.follow_note, (SELECT MAX(name) FROM orders WHERE substr(phone, -11) = n.phone) AS name FROM customer_notes n WHERE n.follow_up != '' AND n.follow_up <= ? ORDER BY n.follow_up LIMIT 20").bind(today).all()
+  ]);
+  const pctChange = (a, b) => b ? Math.round((a - b) / b * 100) : null;
+  return {
+    goal: { target: goals.month_target || 0, sold: monthNow.v, daysLeft: daysInMonth - dom, perDay: goals.month_target > monthNow.v ? Math.ceil((goals.month_target - monthNow.v) / Math.max(1, daysInMonth - dom + 1)) : 0 },
+    todayChannels: todayCh.results.map(r => ({ ...r, label: CHANNELS[r.ch] || r.ch })),
+    mom: { orders: monthNow.n, revenue: monthNow.v, prevOrders: monthPrev.n, prevRevenue: monthPrev.v, ordersPct: pctChange(monthNow.n, monthPrev.n), revenuePct: pctChange(monthNow.v, monthPrev.v) },
+    dueTotal: { n: due.n, v: due.v }, topCustomers: topC.results, followUps: fu.results
+  };
 }

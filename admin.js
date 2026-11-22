@@ -1863,20 +1863,49 @@
         <div id="impPrev"></div></section></div>`;
     $('#csvUp').addEventListener('change', async e => {
       const file = e.target.files[0]; if (!file) return;
-      const rows = parseCsv(await file.text());
-      const head = rows.shift().map(h => h.trim().toLowerCase());
-      const col = (...names) => head.findIndex(h => names.some(n => h.startsWith(n)));
-      const ix = { id: col('entry id', 'id'), date: col('date'), type: col('type'), category: col('category'), description: col('description'), amount: col('amount'),
-        method: col('payment method', 'method'), person: col('paid/received', 'person'), note: col('note'), shareholder: col('shareholder'), createdBy: col('created by') };
-      const pick = (r, k) => ix[k] >= 0 ? (r[ix[k]] || '').trim() : '';
-      const toDay = v => { if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10); const m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : v; };
-      const data = rows.map(r => ({ id: pick(r, 'id'), date: toDay(pick(r, 'date')), type: pick(r, 'type'), category: pick(r, 'category'), description: pick(r, 'description'),
-        amount: pick(r, 'amount'), method: pick(r, 'method'), person: pick(r, 'person'), ref: pick(r, 'note'), shareholder: pick(r, 'shareholder'), createdBy: pick(r, 'createdBy') }));
+      e.target.value = '';
+      const rows = parseCsv((await file.text()).replace(/^\ufeff/, ''));
+      // শিরোনামের সারি খোঁজা (প্রথম ৫ সারির মধ্যে যেটায় Date, Type, Amount আছে)
+      const norm = h => String(h || '').replace(/^\ufeff/, '').trim().toLowerCase().replace(/\s+/g, ' ');
+      let hi = rows.slice(0, 5).findIndex(r => { const h = r.map(norm); return h.some(x => x.startsWith('date') || x.includes('তারিখ')) && h.some(x => x.startsWith('type') || x.includes('ধরন')) && h.some(x => x.startsWith('amount') || x.includes('পরিমাণ')); });
+      if (hi < 0) {
+        const first = (rows[0] || []).map(norm).filter(Boolean).slice(0, 4).join(', ');
+        const tab = /categor/.test(first) ? 'Categories' : /shareholder/.test(first) ? 'Shareholders' : /total joma|financial/.test(first) ? 'Dashboard' : /month/.test(first) ? 'Monthly Report' : /user|action/.test(first) ? 'Audit Log' : '';
+        $('#impPrev').innerHTML = `<p class="warn-box"><b>This file is not the Entries tab${tab ? ` (it looks like the <b>${tab}</b> tab)` : ''}.</b><br>
+          In Google Sheets, first click the <b>Entries</b> tab at the bottom of the screen so it is open, then File › Download › Comma-separated values (.csv), and choose that new file here.
+          ${first ? `<br><span class="muted small">First row of your file: ${esc(first)}</span>` : ''}</p>`;
+        return;
+      }
+      const head = rows[hi].map(norm), body = rows.slice(hi + 1);
+      const col = (...names) => head.findIndex(h => names.some(n => h.startsWith(n) || h.includes(n)));
+      const ix = { id: col('entry id', 'id'), date: col('date', 'তারিখ'), type: col('type', 'ধরন'), category: col('category', 'ক্যাটাগরি'), description: col('description', 'বিবরণ'),
+        amount: col('amount', 'পরিমাণ'), method: col('payment method', 'method', 'মাধ্যম'), person: col('paid/received', 'person'), note: col('note', 'reference'), shareholder: col('shareholder'), createdBy: col('created by') };
+      const pick = (r, k) => ix[k] >= 0 ? String(r[ix[k]] || '').trim() : '';
+      // তারিখ: 2026-06-01, 01/06/2026 বা 6/1/2026 — পুরো ফাইল দেখে ঠিক করা হয় দিন আগে না মাস আগে
+      const slash = body.map(r => pick(r, 'date').match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/)).filter(Boolean);
+      const dayFirst = slash.some(m => Number(m[1]) > 12) || !slash.some(m => Number(m[2]) > 12);
+      const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+      const toDay = v => {
+        if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+        let m = v.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/);
+        if (m) { const [d, mo] = dayFirst ? [m[1], m[2]] : [m[2], m[1]]; return `${m[3]}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`; }
+        m = v.match(/^(\d{1,2})[\s-]([A-Za-z]{3})[a-z]*[\s-,]+(\d{4})/);
+        if (m && MON[m[2].toLowerCase()]) return `${m[3]}-${String(MON[m[2].toLowerCase()]).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+        return v;
+      };
+      const data = body.map(r => ({ id: pick(r, 'id'), date: toDay(pick(r, 'date')), type: pick(r, 'type'), category: pick(r, 'category'), description: pick(r, 'description'),
+        amount: pick(r, 'amount'), method: pick(r, 'method'), person: pick(r, 'person'), ref: pick(r, 'note'), shareholder: pick(r, 'shareholder'), createdBy: pick(r, 'createdBy') }))
+        .filter(x => x.type || x.amount);
+      const bad = data.filter(x => !/^\d{4}-\d{2}-\d{2}$/.test(x.date) || !/^(joma|khoroch|in|out)/i.test(x.type) || !(Number(String(x.amount).replace(/[^0-9.]/g, '')) > 0));
       const sum = t => data.filter(x => new RegExp('^' + t, 'i').test(x.type)).reduce((s, x) => s + (Number(String(x.amount).replace(/[^0-9.]/g, '')) || 0), 0);
+      if (!data.length) { $('#impPrev').innerHTML = '<p class="warn-box">The Entries tab is empty. Nothing to import.</p>'; return; }
       $('#impPrev').innerHTML = `<h3 class="sub">Preview: ${data.length} rows · joma ${tk(sum('joma'))} · khoroch ${tk(sum('khoroch'))}</h3>
         <div class="card flush"><table class="tbl"><thead><tr><th>ID</th><th>Date</th><th>Type</th><th>Category</th><th>Shareholder</th><th>Method</th><th class="r">Amount</th></tr></thead><tbody>
         ${data.slice(0, 15).map(x => `<tr><td>${esc(x.id)}</td><td>${esc(x.date)}</td><td>${esc(x.type)}</td><td>${esc(x.category)}</td><td>${esc(x.shareholder)}</td><td>${esc(x.method)}</td><td class="r">${esc(x.amount)}</td></tr>`).join('')}</tbody></table></div>
-        ${data.length > 15 ? `<p class="muted small">…and ${data.length - 15} more</p>` : ''}<p><button class="btn primary" id="doImport">Import ${data.length} entries</button></p><div id="impRes"></div>`;
+        ${data.length > 15 ? `<p class="muted small">…and ${data.length - 15} more</p>` : ''}
+        ${bad.length ? `<p class="warn-box">${bad.length} row${bad.length > 1 ? 's have' : ' has'} a problem (date, type or amount) and will be skipped, for example ${esc(bad[0].id || '')} ${esc(bad[0].date)} ${esc(bad[0].type)} ${esc(bad[0].amount)}.</p>` : ''}
+        <p class="muted small">Check: the totals above should match “Total Joma” and “Total Khoroch” on your Sheet’s Dashboard.</p>
+        <p><button class="btn primary" id="doImport">Import ${data.length - bad.length} entries</button></p><div id="impRes"></div>`;
       $('#doImport').onclick = async ev => {
         ev.target.disabled = true; ev.target.textContent = 'Importing…';
         let added = 0, skipped = 0, errors = [];

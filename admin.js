@@ -57,6 +57,25 @@
 
   // ---------- login ----------
   function showLogin() { $('#appView').hidden = true; $('#loginView').hidden = false; $('#loginForm').password.focus(); }
+  // কে লগইন করেছে আর কোন অংশ দেখতে পারবে
+  let ME = { user: { name: '', role: 'super' }, perms: { read: [], write: [] } };
+  const canRead = r => ME.perms.read.includes(r), canWrite = r => ME.perms.write.includes(r);
+  const TAB_PERM = { dashboard: 'stats', orders: 'orders', abandoned: 'abandoned', chats: 'chats', customers: 'customers', accounts: 'acc', reports: 'report',
+    products: 'products', custom: 'custom', gallery: 'gallery', categories: 'categories', banners: 'banners', coupons: 'coupons', reviews: 'reviews',
+    settings: 'settings', team: 'users', activity: 'audit' };
+  function applyPerms() {
+    document.querySelectorAll('#tabs a[data-tab]').forEach(a => { a.hidden = !canRead(TAB_PERM[a.dataset.tab] || a.dataset.tab); });
+    document.querySelectorAll('#tabs .side-sep').forEach(sep => {
+      let el = sep.nextElementSibling, any = false;
+      while (el && !el.classList.contains('side-sep')) { if (el.tagName === 'A' && !el.hidden) any = true; el = el.nextElementSibling; }
+      sep.hidden = !any;
+    });
+    document.body.classList.toggle('ro', ME.user.role === 'view');
+    $('#sideUser').innerHTML = `<span class="su-av">${esc(ME.user.name.charAt(0).toUpperCase())}</span><span><strong>${esc(ME.user.name)}</strong><small>${esc(ME.user.roleName || '')}</small></span>
+      ${ME.user.id ? '<button class="su-pw" id="myPw" title="Change my password">Password</button>' : ''}`;
+    const pw = $('#myPw'); if (pw) pw.onclick = changeMyPassword;
+  }
+  async function loadMe() { ME = await api('me'); applyPerms(); }
   function showApp() { $('#loginView').hidden = true; $('#appView').hidden = false; route(); pollBadges(); }
 
   $('#loginForm').addEventListener('submit', async e => {
@@ -64,8 +83,8 @@
     const btn = e.target.querySelector('button');
     btn.disabled = true; $('#loginErr').hidden = true;
     try {
-      await api('login', { method: 'POST', body: { password: e.target.password.value } });
-      e.target.reset(); showApp();
+      await api('login', { method: 'POST', body: { username: e.target.username.value.trim(), password: e.target.password.value } });
+      e.target.reset(); await loadMe(); showApp();
     } catch (err) {
       $('#loginErr').textContent = err.message; $('#loginErr').hidden = false;
     }
@@ -100,17 +119,20 @@
   // ---------- router ----------
   function route() {
     clearTimeout(viewTimer);
-    const [tab, arg] = (location.hash.slice(1) || 'dashboard').split('/');
+    let [tab, arg] = (location.hash.slice(1) || (canRead('stats') ? 'dashboard' : 'orders')).split('/');
+    if (!canRead(TAB_PERM[tab] || (tab === 'product' ? 'products' : tab))) tab = canRead('stats') ? 'dashboard' : 'orders';
     const active = tab === 'product' ? 'products' : tab;
     document.querySelectorAll('#tabs a').forEach(a => a.setAttribute('aria-current', a.dataset.tab === active ? 'page' : 'false'));
     const main = $('#main');
     main.className = 'main' + (tab === 'chats' ? ' wide' : '');
+    $('#main').onclick = null;
     main.innerHTML = '<p class="muted">Loading…</p>';
     const views = {
       dashboard: viewDashboard, orders: viewOrders, chats: () => viewChats(arg), customers: viewCustomers,
       products: viewProducts, product: () => viewProductEdit(arg), custom: viewCustom, gallery: viewGallery,
       categories: viewCategories, settings: viewSettings, coupons: viewCoupons, reviews: viewReviews,
-      abandoned: viewAbandoned, banners: viewBanners, reports: viewReports
+      abandoned: viewAbandoned, banners: viewBanners, reports: viewReports,
+      accounts: () => viewAccounts(arg || 'overview'), team: viewTeam, activity: viewActivity
     };
     (views[tab] || viewDashboard)().catch(fail);
   }
@@ -1478,6 +1500,454 @@
     return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Sales and profit by day">${s}</svg></div>`;
   }
 
+  // ================= ACCOUNTS (জমা-খরচ, অ্যাকাউন্ট, শেয়ারহোল্ডার) =================
+  const tk = n => '৳ ' + Number(n || 0).toLocaleString('en-IN');
+  const KIND_LABEL = { revenue: 'Sales / income', capital: 'Share capital', loan: 'Loan taken', other_income: 'Other income',
+    expense: 'Expense', stock: 'Stock (fabric, buttons)', asset: 'Asset (machine, furniture)', payout: 'Profit paid to partner', loan_repay: 'Loan repaid', courier: 'Courier charge' };
+  const KIND_HELP = { stock: 'Not counted as expense when bought. Its cost counts when the thobe is sold.', asset: 'Long-term things like a machine. Not an expense for profit.',
+    payout: 'Money a partner takes from profit.', capital: 'Shareholder’s investment, not profit.', courier: 'Already estimated in Profit & loss from your courier rates.' };
+  let ACC = null, accFilt = { from: '', to: '', type: '', category: '', account: '', partner: '', q: '' }, accPeriod = 'month';
+  const todayBD = () => new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
+  const accTabs = sub => `<div class="acc-tabs">${[['overview', 'Overview'], ['book', 'Cash book'], ['partners', 'Shareholders'], ['settings', 'Settings', 'super'], ['import', 'Import from Google Sheet', 'super']]
+    .filter(t => !t[2] || ME.user.role === 'super').map(([k, l]) => `<a href="#accounts/${k}" aria-current="${sub === k ? 'page' : 'false'}">${l}</a>`).join('')}</div>`;
+  async function viewAccounts(sub) {
+    ACC = await api('acc/meta');
+    if (sub === 'book') return accBook();
+    if (sub === 'partners') return accPartners();
+    if (sub === 'settings') return accSettingsView();
+    if (sub === 'import') return accImport();
+    return accOverview();
+  }
+  const entryAmt = e => `<b class="amt ${e.type}">${e.type === 'in' ? '+' : e.type === 'out' ? '−' : '⇄'} ${tk(e.amount)}</b>`;
+  const entryWhat = e => e.type === 'transfer' ? `${esc(e.account)} → ${esc(e.to_account)}` : `${esc(e.category || '—')}${e.partner ? ` <span class="muted">(${esc(e.partner)})</span>` : ''}`;
+  const typeTag = t => `<span class="tt tt-${t}">${{ in: 'Joma', out: 'Khoroch', transfer: 'Transfer' }[t]}</span>`;
+
+  async function accOverview() {
+    const [from, to] = periodRange(accPeriod);
+    const d = await api(`acc/overview?from=${from}&to=${to}`);
+    const pct = Math.min(100, d.capTarget ? Math.round(d.capPaid / d.capTarget * 100) : 0);
+    const outCats = d.categories.filter(c => c.type === 'out'), outTotal = outCats.reduce((t, c) => t + c.v, 0);
+    const ruleTxt = { equal: 'shared equally', capital: 'shared by capital paid', custom: 'shared by set percentages' }[d.rule];
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Accounts</h1><p class="muted">Joma, khoroch, balances and shareholders in one place. Website sales post here by themselves when an order is delivered.</p></div>
+        <div class="head-tools w-only"><button class="btn ghost sm" id="settleBtn">Courier payment received</button><button class="btn primary" data-new="in">+ Joma</button><button class="btn primary dark" data-new="out">− Khoroch</button><button class="btn ghost" data-new="transfer">⇄ Transfer</button></div></div>
+      ${accTabs('overview')}
+      <div class="chips">${[['month', 'This month'], ['last', 'Last month'], ['30', 'Last 30 days'], ['year', 'This year']].map(([k, l]) => `<button class="chip" data-aperiod="${k}" aria-pressed="${accPeriod === k}">${l}</button>`).join('')}</div>
+      <div class="kpis kpis-5">
+        <div class="kpi kpi-net"><span>Money in hand now</span><strong>${tk(d.cashNow)}</strong><small>Cash + bKash + Nagad + Bank</small></div>
+        <div class="kpi"><span>Courier owes you</span><strong>${tk(d.courierDue)}</strong><small>COD collected, not yet paid to you</small></div>
+        <div class="kpi"><span>Joma (${from.slice(5)} to ${to.slice(5)})</span><strong class="up">${tk(d.periodIn)}</strong><small>${d.entries} entries</small></div>
+        <div class="kpi"><span>Khoroch</span><strong class="down">${tk(d.periodOut)}</strong><small>stock bought ${tk(d.stockBought)}</small></div>
+        <a class="kpi kpi-link" href="#reports"><span>Net profit</span><strong class="${d.profit.net < 0 ? 'neg' : ''}">${tk(d.profit.net)}</strong><small>${d.profit.margin}% margin${d.profit.missing ? ` · <em class="down">${d.profit.missing} without cost</em>` : ''}</small></a>
+      </div>
+      <div class="acc-cards">${d.accounts.filter(a => a.active).map(a => `<a class="acard ak-${a.kind}" href="#accounts/book" data-acc="${a.id}"><span>${esc(a.name)}</span><strong class="${a.balance < 0 ? 'neg' : ''}">${tk(a.balance)}</strong></a>`).join('')}</div>
+      <div class="dash-grid"><div class="dash-col">
+        <section class="card"><div class="card-head"><h2>Joma and khoroch, last 12 months</h2><span class="muted small"><i class="lg lg-in"></i> Joma <i class="lg lg-out"></i> Khoroch</span></div>${monthBars(d.months)}</section>
+        <section class="card"><div class="card-head"><h2>Recent entries</h2><a class="link" href="#accounts/book">Cash book</a></div>
+          ${d.recent.length ? `<ul class="mini-list">${d.recent.map(e => `<li><div class="exp-li"><span>${typeTag(e.type)} ${entryWhat(e)}<span class="muted block">${esc(e.day)} · ${esc(e.type === 'transfer' ? '' : e.account || '')}${e.note ? ' · ' + esc(e.note.slice(0, 50)) : ''}</span></span><span class="r">${entryAmt(e)}</span></div></li>`).join('')}</ul>` : '<p class="muted">No entries yet. Add your first joma or khoroch.</p>'}
+        </section>
+      </div><div class="dash-col">
+        <section class="card"><div class="card-head"><h2>Shareholder capital</h2><a class="link" href="#accounts/partners">Details</a></div>
+          <p class="cap-line"><b>${tk(d.capPaid)}</b> of ${tk(d.capTarget)} <span class="muted">(${pct}%)</span></p><div class="cap-bar"><i style="--w:${pct}%"></i></div>
+          <table class="tbl"><thead><tr><th>Name</th><th class="r">Paid</th><th class="r">Due</th><th class="r">Profit share</th></tr></thead><tbody>
+          ${d.partners.map(p => `<tr><td><a href="#accounts/partners" class="plink" data-pid="${p.id}">${esc(p.name)}</a> <span class="pst pst-${p.status.toLowerCase()}">${p.status}</span></td><td class="r">${tk(p.paid)}</td><td class="r ${p.due ? 'down' : ''}">${tk(p.due)}</td><td class="r"><b class="${p.profitShare < 0 ? 'down' : ''}">${tk(p.profitShare)}</b></td></tr>`).join('')}</tbody></table>
+          <p class="muted small">Profit to date ${tk(d.netProfit)}, ${ruleTxt}${d.basis === 'delivered' ? ', counting delivered orders' : ''}.</p></section>
+        <section class="card"><h2>Where khoroch went</h2>${outCats.length ? donut(outCats.map(c => [c.name, c.v])) + `<ul class="exp-cats">${outCats.map((c, i) => `<li><span><i class="dot" style="--c:${PALETTE[i % PALETTE.length]}"></i>${esc(c.name)} <small class="muted">${KIND_LABEL[c.kind] && c.kind !== 'expense' ? '· ' + KIND_LABEL[c.kind] : ''}</small></span><i style="--w:${outTotal ? Math.round(c.v / outTotal * 100) : 0}%"></i><b>${tk(c.v)}</b></li>`).join('')}</ul>` : '<p class="muted">No khoroch in this period.</p>'}</section>
+      </div></div>
+      <dialog class="adlg" id="entryDlg"></dialog></div>`;
+    bindAccCommon();
+    $('#main .vroot').addEventListener('click', e => {
+      const pb = e.target.closest('[data-aperiod]'); if (pb) { accPeriod = pb.dataset.aperiod; accOverview().catch(fail); }
+      const ac = e.target.closest('[data-acc]'); if (ac) { accFilt = { ...accFilt, account: ac.dataset.acc }; }
+      const pl = e.target.closest('[data-pid]'); if (pl) { e.preventDefault(); openStatement(Number(pl.dataset.pid)); }
+    });
+    const sb = $('#settleBtn'); if (sb) sb.addEventListener('click', openSettle);
+  }
+  const PALETTE = ['#B5630A', '#1F2D4E', '#2E7D32', '#9C27B0', '#C62828', '#00838F', '#6D4C41', '#F9A825', '#455A64', '#AD1457', '#558B2F'];
+  function donut(items) {
+    const tot = items.reduce((t, x) => t + x[1], 0) || 1, R = 70, C = 2 * Math.PI * R;
+    let off = 0;
+    const arcs = items.map((x, i) => { const len = x[1] / tot * C, a = `<circle r="${R}" cx="90" cy="90" fill="none" stroke="${PALETTE[i % PALETTE.length]}" stroke-width="26" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-off}"><title>${esc(x[0])}: ${tk(x[1])}</title></circle>`; off += len; return a; }).join('');
+    return `<div class="donut"><svg viewBox="0 0 180 180" role="img" aria-label="Khoroch by category"><g transform="rotate(-90 90 90)">${arcs}</g><text x="90" y="86" text-anchor="middle" class="dn-l">Total</text><text x="90" y="106" text-anchor="middle" class="dn-v">${tk(tot)}</text></svg></div>`;
+  }
+  function monthBars(months) {
+    if (!months.length) return '<p class="muted">Nothing yet.</p>';
+    const W = 720, H = 220, pad = 40, n = months.length, bw = (W - pad) / n, max = Math.max(1, ...months.flatMap(m => [m.inn, m.outt]));
+    const y = v => H - 26 - v / max * (H - 46);
+    let s = [0, .5, 1].map(f => `<line x1="${pad}" x2="${W}" y1="${y(max * f)}" y2="${y(max * f)}" class="gl"/><text x="${pad - 6}" y="${y(max * f) + 4}" class="ax" text-anchor="end">${max * f >= 1000 ? Math.round(max * f / 1000) + 'k' : Math.round(max * f)}</text>`).join('');
+    months.forEach((m, i) => {
+      const x = pad + i * bw, w = Math.max(3, bw * .32);
+      s += `<g><title>${m.m}: joma ${tk(m.inn)}, khoroch ${tk(m.outt)}</title><rect x="${x + bw * .14}" y="${y(m.inn)}" width="${w}" height="${H - 26 - y(m.inn)}" rx="2" class="b-in"/><rect x="${x + bw * .14 + w + 2}" y="${y(m.outt)}" width="${w}" height="${H - 26 - y(m.outt)}" rx="2" class="b-out"/></g>`;
+      s += `<text x="${x + bw / 2}" y="${H - 8}" class="ax" text-anchor="middle">${new Date(m.m + '-01T00:00:00Z').toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' })}</text>`;
+    });
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Monthly joma and khoroch">${s}</svg></div>`;
+  }
+
+  // ---------- এন্ট্রি ফর্ম (জমা / খরচ / ট্রান্সফার) ----------
+  function bindAccCommon() {
+    $('#main .vroot').addEventListener('click', e => { const nb = e.target.closest('[data-new]'); if (nb) openEntry({ type: nb.dataset.new }); });
+  }
+  function openEntry(e) {
+    const dlg = $('#entryDlg'), type = e.type || 'in';
+    const cats = ACC.categories.filter(c => c.type === type && (c.active || c.id === e.category_id));
+    const accs = ACC.accounts.filter(a => a.active || a.id === e.account_id || a.id === e.to_account_id);
+    const partners = ACC.partners.filter(p => p.active || p.id === e.partner_id);
+    let attachment = e.attachment || '';
+    dlg.innerHTML = `<form class="adlg-body entry-form t-${type}" id="entryForm">
+      <div class="adlg-head"><div><h2>${e.id ? 'Edit TX-' + e.id : { in: 'New joma', out: 'New khoroch', transfer: 'Move money between accounts' }[type]}</h2>
+        ${e.id ? `<p class="muted small">Added by ${esc(e.created_by || '—')}${e.updated_by ? ` · last edit ${esc(e.updated_by)}` : ''}${e.source === 'order' ? ` · from website order ${esc(e.order_no)}` : ''}</p>` : ''}</div><button type="button" class="icon" data-x aria-label="Close">×</button></div>
+      <div class="type-seg">${[['in', 'Joma'], ['out', 'Khoroch'], ['transfer', 'Transfer']].map(([k, l]) => `<button type="button" data-tsw="${k}" aria-pressed="${type === k}">${l}</button>`).join('')}</div>
+      <div class="g2">
+        <label class="field"><span>Date</span><input type="date" name="day" value="${esc(e.day || todayBD())}" required></label>
+        <label class="field big-amt"><span>Amount (৳)</span><input type="number" name="amount" min="1" step="1" inputmode="numeric" value="${e.amount || ''}" required autofocus></label>
+      </div>
+      ${type === 'transfer' ? `<div class="g2">
+        <label class="field"><span>From</span><select name="account_id">${accs.map(a => `<option value="${a.id}" ${a.id === e.account_id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>To</span><select name="to_account_id">${accs.map((a, i) => `<option value="${a.id}" ${(e.to_account_id ? a.id === e.to_account_id : i === 1) ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label></div>`
+      : `<div class="g2">
+        <label class="field"><span>Category</span><select name="category_id" id="enCat">${cats.map(c => `<option value="${c.id}" data-kind="${c.kind}" ${c.id === e.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select><small class="muted" id="kindHelp"></small></label>
+        <label class="field"><span>${type === 'in' ? 'Came into' : 'Paid from'}</span><select name="account_id">${accs.filter(a => a.kind !== 'courier' || a.id === e.account_id).map(a => `<option value="${a.id}" ${a.id === e.account_id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label></div>
+        <label class="field" id="partnerRow" hidden><span>Shareholder</span><select name="partner_id"><option value="">Choose…</option>${partners.map(p => `<option value="${p.id}" ${p.id === e.partner_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>${type === 'in' ? 'Received from' : 'Paid to'} <small>optional</small></span><input name="person" value="${esc(e.person || '')}" list="personList"></label>`}
+      <div class="g2">
+        <label class="field"><span>Voucher / reference <small>optional</small></span><input name="ref" value="${esc(e.ref || '')}"></label>
+        <label class="field"><span>Note <small>optional</small></span><input name="note" value="${esc(e.note || '')}" placeholder="What was it for?"></label></div>
+      <div class="attach"><div id="attPrev">${attachment ? `<a href="/img/${esc(attachment)}" target="_blank" rel="noopener"><img src="/img/${esc(attachment)}" alt="Receipt"></a>` : ''}</div>
+        <label class="upload"><input type="file" accept="image/*" id="attUp" hidden><span class="btn ghost sm">${attachment ? 'Change receipt photo' : 'Add receipt photo'}</span></label>
+        ${attachment ? '<button type="button" class="text-btn" id="attRm">Remove</button>' : ''}</div>
+      <p class="err" id="enErr" hidden></p>
+      <div class="row-btns">${e.id && ['super', 'admin'].includes(ME.user.role) ? '<button type="button" class="btn danger sm" id="enDel">Delete</button>' : ''}<span class="spacer"></span>
+        <button type="button" class="btn ghost" data-x>Cancel</button>${e.id ? '' : '<button type="submit" class="btn ghost" data-again>Save and add another</button>'}<button type="submit" class="btn primary">${e.id ? 'Save changes' : 'Save'}</button></div>
+      <datalist id="personList">${[...new Set(ACC.partners.map(p => p.name))].map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    </form>`;
+    if (!dlg.open) dlg.showModal();
+    const f = $('#entryForm');
+    const kindSync = () => {
+      const sel = $('#enCat'); if (!sel) return;
+      const k = sel.selectedOptions[0] ? sel.selectedOptions[0].dataset.kind : '';
+      $('#partnerRow').hidden = !(k === 'capital' || k === 'payout');
+      $('#kindHelp').textContent = KIND_HELP[k] || '';
+    };
+    if ($('#enCat')) { $('#enCat').addEventListener('change', kindSync); kindSync(); }
+    dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
+    dlg.querySelectorAll('[data-tsw]').forEach(b => b.onclick = () => openEntry({ ...e, ...Object.fromEntries(new FormData(f)), amount: f.amount.value, type: b.dataset.tsw, category_id: null }));
+    $('#attUp').addEventListener('change', async ev => {
+      const file = ev.target.files[0]; if (!file) return;
+      try { toast('Uploading…'); attachment = await uploadFile(file, 1600); $('#attPrev').innerHTML = `<img src="/img/${esc(attachment)}" alt="Receipt">`; toast('Receipt added'); } catch (err) { fail(err); }
+    });
+    const rm = $('#attRm'); if (rm) rm.onclick = () => { attachment = ''; $('#attPrev').innerHTML = ''; };
+    let again = false;
+    const ag = f.querySelector('[data-again]'); if (ag) ag.onclick = () => { again = true; };
+    f.addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const body = { ...Object.fromEntries(new FormData(f)), type, attachment };
+      try {
+        await api('acc/entries' + (e.id ? '/' + e.id : ''), { method: e.id ? 'PUT' : 'POST', body });
+        toast(e.id ? 'Entry updated' : 'Saved');
+        if (again) { again = false; openEntry({ type, day: body.day, account_id: Number(body.account_id), category_id: Number(body.category_id) || null }); return; }
+        dlg.close(); route();
+      } catch (err) { $('#enErr').textContent = err.message; $('#enErr').hidden = false; again = false; }
+    });
+    const del = $('#enDel');
+    if (del) del.onclick = async () => {
+      if (!confirm(`Delete TX-${e.id} (${tk(e.amount)})? This is written in the activity log.`)) return;
+      try { await api('acc/entries/' + e.id, { method: 'DELETE' }); toast('Entry deleted'); dlg.close(); route(); } catch (err) { fail(err); }
+    };
+  }
+  function openSettle() {
+    const dlg = $('#entryDlg');
+    const accs = ACC.accounts.filter(a => a.active && a.kind !== 'courier');
+    dlg.innerHTML = `<form class="adlg-body" id="settleForm"><div class="adlg-head"><div><h2>Courier payment received</h2><p class="muted small">When Steadfast or another courier pays you the cash they collected.</p></div><button type="button" class="icon" data-x>×</button></div>
+      <div class="g2"><label class="field"><span>Date</span><input type="date" name="day" value="${todayBD()}"></label>
+        <label class="field"><span>Money came into</span><select name="to_account_id">${accs.map(a => `<option value="${a.id}" ${a.kind === 'bank' ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+        <label class="field big-amt"><span>Amount received (৳)</span><input type="number" name="received" min="0" required></label>
+        <label class="field"><span>Courier charges they kept (৳)</span><input type="number" name="charge" min="0" value="0"></label>
+        <label class="field"><span>Invoice / reference</span><input name="ref"></label><label class="field"><span>Note</span><input name="note"></label></div>
+      <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`;
+    dlg.showModal();
+    dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
+    $('#settleForm').addEventListener('submit', async ev => {
+      ev.preventDefault();
+      try { await api('acc/settle', { method: 'POST', body: Object.fromEntries(new FormData(ev.target)) }); toast('Courier payment saved'); dlg.close(); route(); } catch (err) { fail(err); }
+    });
+  }
+
+  // ---------- ক্যাশ বুক: খোঁজা, ফিল্টার, এডিট ----------
+  async function accBook() {
+    const qs = new URLSearchParams(Object.entries(accFilt).filter(([, v]) => v));
+    const d = await api('acc/entries?' + qs);
+    const opt = (list, cur, lab) => list.map(x => `<option value="${x.id}" ${String(cur) === String(x.id) ? 'selected' : ''}>${esc(lab(x))}</option>`).join('');
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Cash book</h1><p class="muted">Every joma, khoroch and transfer. Click a row to see or edit it.</p></div>
+        <div class="head-tools"><button class="btn ghost sm" id="bookCsv">Download CSV</button><button class="btn ghost sm" onclick="print()">Print</button>
+        <span class="w-only"><button class="btn primary" data-new="in">+ Joma</button> <button class="btn primary dark" data-new="out">− Khoroch</button> <button class="btn ghost" data-new="transfer">⇄</button></span></div></div>
+      ${accTabs('book')}
+      <form class="filters book-f" id="bookF">
+        <label class="date-f">From <input type="date" name="from" value="${esc(accFilt.from)}"></label><label class="date-f">To <input type="date" name="to" value="${esc(accFilt.to)}"></label>
+        <select name="type"><option value="">All types</option>${[['in', 'Joma'], ['out', 'Khoroch'], ['transfer', 'Transfer']].map(([k, l]) => `<option value="${k}" ${accFilt.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <select name="category"><option value="">All categories</option>${opt(ACC.categories, accFilt.category, c => (c.type === 'in' ? 'Joma · ' : 'Khoroch · ') + c.name)}</select>
+        <select name="account"><option value="">All accounts</option>${opt(ACC.accounts, accFilt.account, a => a.name)}</select>
+        <select name="partner"><option value="">All shareholders</option>${opt(ACC.partners, accFilt.partner, p => p.name)}</select>
+        <input class="search" type="search" name="q" placeholder="Search note, person, TX-12, order no" value="${esc(accFilt.q)}">
+        <button class="btn ghost sm" type="button" id="bookClear">Clear</button></form>
+      <div class="book-sum"><span>${d.total} entr${d.total === 1 ? 'y' : 'ies'}${d.total > d.rows.length ? ` (latest ${d.rows.length} shown)` : ''}</span><span>Joma <b class="up">${tk(d.sumIn)}</b></span><span>Khoroch <b class="down">${tk(d.sumOut)}</b></span><span>Difference <b>${tk(d.sumIn - d.sumOut)}</b></span></div>
+      ${d.rows.length ? `<div class="card flush"><table class="tbl book">
+        <thead><tr><th>ID</th><th>Date</th><th>Type</th><th>Category</th><th>Details</th><th>Account</th><th class="r">Amount</th><th>By</th></tr></thead>
+        <tbody>${d.rows.map((e, i) => `<tr data-row="${i}" tabindex="0">
+          <td class="muted nowrap">TX-${e.id}</td><td class="nowrap">${esc(e.day)}</td><td>${typeTag(e.type)}</td><td>${entryWhat(e)}</td>
+          <td>${esc(e.person || '')}${e.person && e.note ? ' · ' : ''}<span class="muted">${esc(e.note || '')}</span>${e.ref ? ` <span class="ref">#${esc(e.ref)}</span>` : ''}${e.attachment ? ' 📎' : ''}${e.source === 'order' ? ' <b class="tag">Website</b>' : e.source === 'import' ? ' <b class="tag">Sheet</b>' : ''}</td>
+          <td class="nowrap">${e.type === 'transfer' ? `${esc(e.account)} → ${esc(e.to_account)}` : esc(e.account || '')}</td>
+          <td class="r nowrap">${entryAmt(e)}</td><td class="small muted">${esc(e.created_by || '')}${e.updated_by ? `<br>edit: ${esc(e.updated_by)}` : ''}</td></tr>`).join('')}</tbody></table></div>`
+        : '<p class="empty">No entries match. Clear the filters or add a new entry.</p>'}
+      <dialog class="adlg" id="entryDlg"></dialog></div>`;
+    bindAccCommon();
+    const f = $('#bookF');
+    let t;
+    const apply = () => { accFilt = Object.fromEntries(new FormData(f)); accBook().then(() => { const q = $('#bookF').q; if (document.activeElement === document.body && q.value) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); } }).catch(fail); };
+    f.addEventListener('change', e => { if (e.target.name !== 'q') apply(); });
+    f.q.addEventListener('input', () => { clearTimeout(t); t = setTimeout(apply, 400); });
+    $('#bookClear').onclick = () => { accFilt = { from: '', to: '', type: '', category: '', account: '', partner: '', q: '' }; accBook().catch(fail); };
+    const open = tr => { const e = d.rows[Number(tr.dataset.row)]; if (canWrite('acc')) openEntry(e); };
+    $('#main .vroot').addEventListener('click', e => { const tr = e.target.closest('tr[data-row]'); if (tr) open(tr); });
+    $('#main .vroot').addEventListener('keydown', e => { const tr = e.target.closest('tr[data-row]'); if (tr && e.key === 'Enter') open(tr); });
+    $('#bookCsv').onclick = () => {
+      const cell = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+      const rows = [['ID', 'Date', 'Type', 'Category', 'Shareholder', 'Account', 'To account', 'Amount', 'Person', 'Reference', 'Note', 'Added by', 'Edited by', 'Order']];
+      d.rows.forEach(e => rows.push(['TX-' + e.id, e.day, { in: 'Joma', out: 'Khoroch', transfer: 'Transfer' }[e.type], e.category, e.partner, e.account, e.to_account, e.amount, e.person, e.ref, e.note, e.created_by, e.updated_by, e.order_no]));
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + rows.map(r => r.map(cell).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' }));
+      a.download = `al-hadaf-cashbook-${todayBD()}.csv`; document.body.appendChild(a); a.click(); a.remove();
+    };
+  }
+
+  // ---------- শেয়ারহোল্ডার ----------
+  async function accPartners() {
+    const d = await api(`acc/overview?from=${todayBD().slice(0, 8)}01&to=${todayBD()}`);
+    const sup = ME.user.role === 'super';
+    const pct = Math.min(100, d.capTarget ? Math.round(d.capPaid / d.capTarget * 100) : 0);
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Shareholders</h1><p class="muted">Capital each partner has put in, what is still due, their share of profit and what they have taken.</p></div>
+        <div class="head-tools">${sup ? '<button class="btn ghost sm" id="allTarget">Change everyone’s target</button><button class="btn primary sm" id="addPartner">Add shareholder</button>' : ''}<span class="w-only"><button class="btn primary" data-new="in">+ Capital joma</button></span></div></div>
+      ${accTabs('partners')}
+      <section class="card cap-card"><div class="cap-top"><div><span class="muted">Capital collected</span><strong>${tk(d.capPaid)}</strong><span class="muted">of ${tk(d.capTarget)}</span></div><div class="cap-ring" style="--p:${pct}"><b>${pct}%</b></div></div>
+        <p class="muted small">Profit to date: <b>${tk(d.netProfit)}</b> · rule: <b>${{ equal: 'equal shares', capital: 'by capital paid', custom: 'by set percentages' }[d.rule]}</b>${sup ? ' · <a href="#accounts/settings" class="link">change</a>' : ''}</p></section>
+      <div class="partner-grid">${d.partners.map(p => `<article class="card pcard">
+        <div class="pc-head"><span class="pav">${esc(p.name.charAt(0))}</span><div><h3>${esc(p.name)}</h3><span class="pst pst-${p.status.toLowerCase()}">${p.status}</span> <span class="muted small">${Math.round(p.ratio * 1000) / 10}% of profit</span></div></div>
+        <div class="pbar"><i style="--w:${p.target ? Math.min(100, Math.round(p.paid / p.target * 100)) : 0}%"></i></div>
+        <dl class="pdl"><dt>Target</dt><dd>${tk(p.target)}</dd><dt>Paid</dt><dd>${tk(p.paid)}</dd><dt>Due</dt><dd class="${p.due ? 'down' : ''}">${tk(p.due)}</dd>
+          <dt>Profit share</dt><dd><b>${tk(p.profitShare)}</b></dd><dt>Taken</dt><dd>${tk(p.taken)}</dd><dt>Can still take</dt><dd><b class="${p.balance < 0 ? 'down' : 'up'}">${tk(p.balance)}</b></dd></dl>
+        <div class="row-btns"><button class="btn ghost sm" data-stmt="${p.id}">Statement</button>${sup ? `<button class="btn ghost sm" data-pedit="${p.id}">Edit</button>` : ''}</div>
+      </article>`).join('')}</div>
+      <div id="stmtBox"></div>
+      <dialog class="adlg" id="entryDlg"></dialog><dialog class="adlg" id="pDlg"></dialog></div>`;
+    bindAccCommon();
+    $('#main .vroot').addEventListener('click', e => {
+      const st = e.target.closest('[data-stmt]'); if (st) openStatement(Number(st.dataset.stmt));
+      const pe = e.target.closest('[data-pedit]'); if (pe) partnerForm(ACC.partners.find(p => p.id === Number(pe.dataset.pedit)));
+    });
+    const ap = $('#addPartner'); if (ap) ap.onclick = () => partnerForm({});
+    const at = $('#allTarget'); if (at) at.onclick = () => {
+      const dlg = $('#pDlg');
+      dlg.innerHTML = `<form class="adlg-body" id="atForm"><div class="adlg-head"><h2>Change everyone’s target</h2><button type="button" class="icon" data-x>×</button></div>
+        <p class="muted small">For example from 20,000 to 50,000. Each change is saved in every shareholder’s target history.</p>
+        <div class="g2"><label class="field"><span>New target (৳)</span><input type="number" name="target" min="1" required></label><label class="field"><span>Reason <small>optional</small></span><input name="note" placeholder="Meeting decision"></label></div>
+        <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn primary">Change target</button></div></form>`;
+      dlg.showModal(); dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
+      $('#atForm').onsubmit = async ev => { ev.preventDefault(); try { await api('acc/targets', { method: 'PUT', body: Object.fromEntries(new FormData(ev.target)) }); toast('Targets changed'); dlg.close(); accPartners().catch(fail); } catch (err) { fail(err); } };
+    };
+  }
+  function partnerForm(p) {
+    const dlg = $('#pDlg');
+    dlg.innerHTML = `<form class="adlg-body" id="pForm"><div class="adlg-head"><h2>${p.id ? 'Edit ' + esc(p.name) : 'Add shareholder'}</h2><button type="button" class="icon" data-x>×</button></div>
+      <div class="g2"><label class="field"><span>Name</span><input name="name" value="${esc(p.name || '')}" required></label><label class="field"><span>Mobile <small>optional</small></span><input name="phone" value="${esc(p.phone || '')}"></label>
+      <label class="field"><span>Capital target (৳)</span><input type="number" name="target" min="0" value="${p.target == null ? 50000 : p.target}"></label>
+      <label class="field"><span>Profit % <small>used only with the “set percentages” rule</small></span><input type="number" name="share_pct" min="0" max="100" step="0.01" value="${p.share_pct || 0}"></label>
+      <label class="field"><span>Reason if target changes <small>optional</small></span><input name="note"></label>
+      <label class="field"><span>Order</span><input type="number" name="sort" value="${p.sort || 0}"></label></div>
+      ${p.id ? `<label class="check"><input type="checkbox" name="active" ${p.active !== 0 ? 'checked' : ''}> Active shareholder</label>` : ''}
+      <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn primary">Save</button></div></form>`;
+    dlg.showModal(); dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
+    $('#pForm').onsubmit = async ev => {
+      ev.preventDefault();
+      const body = { ...Object.fromEntries(new FormData(ev.target)), active: ev.target.active ? ev.target.active.checked : true };
+      try { await api('acc/partners' + (p.id ? '/' + p.id : ''), { method: p.id ? 'PUT' : 'POST', body }); toast('Saved'); dlg.close(); accPartners().catch(fail); } catch (err) { fail(err); }
+    };
+  }
+  async function openStatement(id) {
+    if (!location.hash.startsWith('#accounts/partners')) { location.hash = 'accounts/partners'; await new Promise(r => setTimeout(r, 400)); }
+    const d = await api('acc/partner/' + id), p = d.partner;
+    let run = 0;
+    $('#stmtBox').innerHTML = `<section class="card stmt" id="stmt">
+      <div class="stmt-head"><div><img src="/logo-light.png" alt="Al Hadaf" height="40"><h2>Shareholder statement</h2><p class="big">${esc(p.name)}</p><p class="muted small">Printed ${todayBD()}</p></div>
+        <button class="btn ghost sm noprint" onclick="print()">Print</button></div>
+      <div class="stmt-kpis"><div><span>Target</span><b>${tk(p.target)}</b></div><div><span>Paid</span><b>${tk(p.paid)}</b></div><div><span>Due</span><b>${tk(p.due)}</b></div>
+        <div><span>Profit share</span><b>${tk(p.profitShare)}</b></div><div><span>Taken</span><b>${tk(p.taken)}</b></div><div><span>Balance</span><b>${tk(p.balance)}</b></div></div>
+      <h3 class="sub">Money in and out</h3>
+      <table class="tbl"><thead><tr><th>Date</th><th>What</th><th>Account</th><th>Reference</th><th class="r">Amount</th><th class="r">Capital so far</th></tr></thead><tbody>
+      ${d.entries.length ? d.entries.map(e => { if (e.kind === 'capital') run += e.amount; return `<tr><td>${esc(e.day)}</td><td>${e.kind === 'capital' ? 'Capital paid in' : 'Profit taken'}</td><td>${esc(e.account || '')}</td><td>${esc(e.ref || e.note || '')}</td><td class="r">${e.kind === 'capital' ? '+' : '−'} ${tk(e.amount)}</td><td class="r">${tk(run)}</td></tr>`; }).join('') : '<tr><td colspan="6" class="muted">No entries yet.</td></tr>'}</tbody></table>
+      <h3 class="sub">Target history</h3>
+      ${d.targetLog.length ? `<ul class="tlog">${d.targetLog.map(l => `<li><b>${tk(l.old_target)} → ${tk(l.new_target)}</b> <span class="muted">${fmtWhen(l.at)} by ${esc(l.by_name || '')}${l.note ? ' · ' + esc(l.note) : ''}</span></li>`).join('')}</ul>` : '<p class="muted small">Target has not changed.</p>'}
+    </section>`;
+    $('#stmt').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  // ---------- সেটিংস (শুধু সুপার অ্যাডমিন) ----------
+  function accSettingsView() {
+    const s = ACC.settings;
+    const kinds = type => (type === 'in' ? ACC.inKinds : ACC.outKinds);
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><h1>Accounts settings</h1></div>${accTabs('settings')}
+      <section class="card"><h2>Profit sharing</h2><form id="ruleForm"><div class="opts-v">
+        ${[['equal', 'Equal shares', 'Every active shareholder gets the same part.'], ['capital', 'By capital paid', 'Whoever has put in more capital gets more.'], ['custom', 'Set percentages', 'Use the profit % written on each shareholder.']]
+          .map(([k, l, h]) => `<label class="opt-card"><input type="radio" name="profit_rule" value="${k}" ${s.profit_rule === k ? 'checked' : ''}><span><b>${l}</b><small>${h}</small></span></label>`).join('')}</div>
+        <div class="g2"><label class="field"><span>Count profit from</span><select name="profit_basis"><option value="delivered" ${s.profit_basis === 'delivered' ? 'selected' : ''}>Delivered orders only (money received)</option><option value="all" ${s.profit_basis === 'all' ? 'selected' : ''}>All orders except cancelled</option></select></label>
+        <label class="field"><span>Business start date <small>profit counts from here</small></span><input type="date" name="start_day" value="${esc(s.start_day)}"></label></div>
+        <button class="btn primary sm">Save</button></form></section>
+      <section class="card"><div class="card-head"><h2>Accounts</h2><button class="btn ghost sm" data-addacc>Add account</button></div>
+        <p class="muted small">Opening balance = money already in that account on the day you start using this.</p>
+        <table class="tbl"><thead><tr><th>Name</th><th>Type</th><th class="r">Opening</th><th>Active</th><th></th></tr></thead><tbody>
+        ${ACC.accounts.map(a => `<tr><td>${esc(a.name)}</td><td>${esc(a.kind)}</td><td class="r">${tk(a.opening)}</td><td>${a.active ? 'Yes' : 'No'}</td><td class="r"><button class="btn ghost sm" data-eacc="${a.id}">Edit</button></td></tr>`).join('')}</tbody></table></section>
+      <section class="card"><div class="card-head"><h2>Categories</h2><span><button class="btn ghost sm" data-addcat="in">Add joma category</button> <button class="btn ghost sm" data-addcat="out">Add khoroch category</button></span></div>
+        <p class="muted small">The “kind” decides how profit is counted. Fabric and buttons are <b>stock</b>: their cost counts when the thobe sells. A machine is an <b>asset</b>.</p>
+        <div class="g2">${['in', 'out'].map(type => `<div><h3 class="sub">${type === 'in' ? 'Joma' : 'Khoroch'}</h3><table class="tbl"><tbody>
+          ${ACC.categories.filter(c => c.type === type).map(c => `<tr class="${c.active ? '' : 'off'}"><td>${esc(c.name)}</td><td class="muted small">${KIND_LABEL[c.kind]}</td><td class="r"><button class="btn ghost sm" data-ecat="${c.id}">Edit</button></td></tr>`).join('')}</tbody></table></div>`).join('')}</div></section>
+      <section class="card"><h2>Website sales</h2><p class="muted small">Delivered orders post as Sales by themselves (into bKash if paid by bKash, otherwise into “Courier (to receive)”). Orders delivered before this update can be posted once:</p>
+        <button class="btn ghost sm" id="backfill">Post past delivered orders</button></section>
+      <dialog class="adlg" id="sDlg"></dialog></div>`;
+    $('#ruleForm').onsubmit = async ev => { ev.preventDefault(); try { await api('acc/settings', { method: 'PUT', body: Object.fromEntries(new FormData(ev.target)) }); toast('Saved'); } catch (err) { fail(err); } };
+    $('#backfill').onclick = async () => { try { const r = await api('acc/backfill', { method: 'POST' }); toast(`${r.posted} orders posted as sales`); } catch (err) { fail(err); } };
+    const dlg = $('#sDlg');
+    const form = (title, html, path, method) => {
+      dlg.innerHTML = `<form class="adlg-body" id="sForm"><div class="adlg-head"><h2>${title}</h2><button type="button" class="icon" data-x>×</button></div>${html}
+        <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn primary">Save</button></div></form>`;
+      dlg.showModal(); dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
+      $('#sForm').onsubmit = async ev => { ev.preventDefault(); const b = Object.fromEntries(new FormData(ev.target)); b.active = ev.target.active ? ev.target.active.checked : true;
+        try { await api(path, { method, body: b }); toast('Saved'); dlg.close(); viewAccounts('settings').catch(fail); } catch (err) { fail(err); } };
+    };
+    $('#main .vroot').addEventListener('click', e => {
+      const aa = e.target.closest('[data-addacc]'), ea = e.target.closest('[data-eacc]'), ac = e.target.closest('[data-addcat]'), ec = e.target.closest('[data-ecat]');
+      if (aa || ea) {
+        const a = ea ? ACC.accounts.find(x => x.id === Number(ea.dataset.eacc)) : { kind: 'bank', opening: 0, active: 1 };
+        form(a.id ? 'Edit account' : 'Add account', `<div class="g2"><label class="field"><span>Name</span><input name="name" value="${esc(a.name || '')}" required></label>
+          <label class="field"><span>Type</span><select name="kind">${['cash', 'bkash', 'nagad', 'bank', 'courier', 'other'].map(k => `<option ${a.kind === k ? 'selected' : ''}>${k}</option>`).join('')}</select></label>
+          <label class="field"><span>Opening balance (৳)</span><input type="number" name="opening" value="${a.opening || 0}"></label><label class="field"><span>Order</span><input type="number" name="sort" value="${a.sort || 0}"></label></div>
+          <label class="check"><input type="checkbox" name="active" ${a.active ? 'checked' : ''}> Active</label>`, 'acc/accounts' + (a.id ? '/' + a.id : ''), a.id ? 'PUT' : 'POST');
+      }
+      if (ac || ec) {
+        const c = ec ? ACC.categories.find(x => x.id === Number(ec.dataset.ecat)) : { type: ac.dataset.addcat, active: 1 };
+        form(c.id ? 'Edit category' : 'Add category', `<input type="hidden" name="type" value="${c.type}"><div class="g2"><label class="field"><span>Name</span><input name="name" value="${esc(c.name || '')}" required></label>
+          <label class="field"><span>Kind</span><select name="kind">${kinds(c.type).map(k => `<option value="${k}" ${c.kind === k ? 'selected' : ''}>${KIND_LABEL[k]}</option>`).join('')}</select></label>
+          <label class="field"><span>Order</span><input type="number" name="sort" value="${c.sort || 0}"></label></div>
+          <label class="check"><input type="checkbox" name="active" ${c.active ? 'checked' : ''}> Active</label>`, 'acc/categories' + (c.id ? '/' + c.id : ''), c.id ? 'PUT' : 'POST');
+      }
+    });
+  }
+
+  // ---------- Google Sheet থেকে আনা ----------
+  function parseCsv(text) {
+    const rows = []; let row = [], cell = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+      else if (ch === '"') q = true; else if (ch === ',') { row.push(cell); cell = ''; }
+      else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+      else cell += ch;
+    }
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter(r => r.some(c => c.trim()));
+  }
+  function accImport() {
+    $('#main').innerHTML = `<div class="vroot"><div class="page-head"><div><h1>Import from Google Sheet</h1><p class="muted">Bring your old Al Hadaf Accounts entries here, so the history is not lost.</p></div></div>${accTabs('import')}
+      <section class="card"><ol class="steps-ol"><li>Open your Google Sheet and go to the <b>Entries</b> tab.</li><li>File › Download › <b>Comma-separated values (.csv)</b>.</li><li>Choose that file below, check the preview, then press Import.</li></ol>
+        <label class="upload"><input type="file" accept=".csv,text/csv" id="csvUp" hidden><span class="btn primary">Choose the CSV file</span></label>
+        <p class="muted small">Running it twice is safe: entries already imported are skipped. “Capital” and “Share Capital” become one category. Fabric and buttons are counted as stock.</p>
+        <div id="impPrev"></div></section></div>`;
+    $('#csvUp').addEventListener('change', async e => {
+      const file = e.target.files[0]; if (!file) return;
+      const rows = parseCsv(await file.text());
+      const head = rows.shift().map(h => h.trim().toLowerCase());
+      const col = (...names) => head.findIndex(h => names.some(n => h.startsWith(n)));
+      const ix = { id: col('entry id', 'id'), date: col('date'), type: col('type'), category: col('category'), description: col('description'), amount: col('amount'),
+        method: col('payment method', 'method'), person: col('paid/received', 'person'), note: col('note'), shareholder: col('shareholder'), createdBy: col('created by') };
+      const pick = (r, k) => ix[k] >= 0 ? (r[ix[k]] || '').trim() : '';
+      const toDay = v => { if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10); const m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : v; };
+      const data = rows.map(r => ({ id: pick(r, 'id'), date: toDay(pick(r, 'date')), type: pick(r, 'type'), category: pick(r, 'category'), description: pick(r, 'description'),
+        amount: pick(r, 'amount'), method: pick(r, 'method'), person: pick(r, 'person'), ref: pick(r, 'note'), shareholder: pick(r, 'shareholder'), createdBy: pick(r, 'createdBy') }));
+      const sum = t => data.filter(x => new RegExp('^' + t, 'i').test(x.type)).reduce((s, x) => s + (Number(String(x.amount).replace(/[^0-9.]/g, '')) || 0), 0);
+      $('#impPrev').innerHTML = `<h3 class="sub">Preview: ${data.length} rows · joma ${tk(sum('joma'))} · khoroch ${tk(sum('khoroch'))}</h3>
+        <div class="card flush"><table class="tbl"><thead><tr><th>ID</th><th>Date</th><th>Type</th><th>Category</th><th>Shareholder</th><th>Method</th><th class="r">Amount</th></tr></thead><tbody>
+        ${data.slice(0, 15).map(x => `<tr><td>${esc(x.id)}</td><td>${esc(x.date)}</td><td>${esc(x.type)}</td><td>${esc(x.category)}</td><td>${esc(x.shareholder)}</td><td>${esc(x.method)}</td><td class="r">${esc(x.amount)}</td></tr>`).join('')}</tbody></table></div>
+        ${data.length > 15 ? `<p class="muted small">…and ${data.length - 15} more</p>` : ''}<p><button class="btn primary" id="doImport">Import ${data.length} entries</button></p><div id="impRes"></div>`;
+      $('#doImport').onclick = async ev => {
+        ev.target.disabled = true; ev.target.textContent = 'Importing…';
+        let added = 0, skipped = 0, errors = [];
+        for (let i = 0; i < data.length; i += 200) {
+          try { const r = await api('acc/import', { method: 'POST', body: { rows: data.slice(i, i + 200) } }); added += r.added; skipped += r.skipped; errors = errors.concat(r.errors); }
+          catch (err) { fail(err); break; }
+        }
+        $('#impRes').innerHTML = `<p class="ok-box">Imported <b>${added}</b> entries, skipped ${skipped} that were already here.${errors.length ? `<br>${errors.length} rows had problems: ${errors.slice(0, 5).map(esc).join('; ')}` : ''}</p><a class="btn ghost" href="#accounts/overview">See accounts</a>`;
+        ev.target.textContent = 'Done';
+      };
+    });
+  }
+
+  // ================= TEAM & ACCESS =================
+  const ROLE_HELP = { super: 'Everything, including team, shareholder targets and account settings.', admin: 'Everything except team and accounts settings.',
+    accountant: 'Accounts, profit & loss and reports. Can see orders but not change them.', staff: 'Orders, chats, customers and unfinished orders. No money pages.', view: 'Can look at everything but change nothing. Good for partners.' };
+  async function viewTeam() {
+    const d = await api('users');
+    $('#main').innerHTML = `<div class="vroot"><div class="page-head"><div><h1>Team &amp; access</h1><p class="muted">Each person logs in with their own username and password. Everything they change is written in the activity log.</p></div>
+        <button class="btn primary" id="addUser">Add person</button></div>
+      <div class="role-help">${Object.entries(d.roles).map(([k, l]) => `<div><b>${l}</b><small>${ROLE_HELP[k]}</small></div>`).join('')}</div>
+      <div class="card flush"><table class="tbl"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Last login</th><th></th></tr></thead><tbody>
+        <tr><td><b>Owner</b></td><td>owner <span class="muted small">(empty username + ADMIN_PASSWORD)</span></td><td><span class="rtag r-super">Super admin</span></td><td>—</td><td></td></tr>
+        ${d.users.map(u => `<tr class="${u.active ? '' : 'off'}"><td><b>${esc(u.name)}</b>${u.active ? '' : ' <span class="muted">(turned off)</span>'}</td><td>${esc(u.username)}</td><td><span class="rtag r-${u.role}">${esc(d.roles[u.role])}</span></td>
+          <td class="small">${u.last_login ? fmtWhen(u.last_login) : 'Never'}</td><td class="r"><button class="btn ghost sm" data-uedit="${u.id}">Edit</button></td></tr>`).join('')}</tbody></table></div>
+      <dialog class="adlg" id="uDlg"></dialog></div>`;
+    const dlg = $('#uDlg');
+    const form = u => {
+      dlg.innerHTML = `<form class="adlg-body" id="uForm"><div class="adlg-head"><h2>${u.id ? 'Edit ' + esc(u.name) : 'Add person'}</h2><button type="button" class="icon" data-x>×</button></div>
+        <div class="g2"><label class="field"><span>Name</span><input name="name" value="${esc(u.name || '')}" required></label>
+        <label class="field"><span>Username</span><input name="username" value="${esc(u.username || '')}" ${u.id ? 'disabled' : 'required'} autocapitalize="none" placeholder="tamim"></label>
+        <label class="field"><span>${u.id ? 'New password <small>leave empty to keep</small>' : 'Password <small>at least 8 characters</small>'}</span><input type="text" name="password" ${u.id ? '' : 'required minlength="8"'} autocomplete="new-password"></label>
+        <label class="field"><span>Role</span><select name="role">${Object.entries(d.roles).map(([k, l]) => `<option value="${k}" ${(u.role || 'staff') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
+        <p class="muted small" id="roleHelp"></p>
+        ${u.id ? `<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> Can log in</label>` : ''}
+        <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn primary">Save</button></div></form>`;
+      dlg.showModal(); dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
+      const f = $('#uForm'), rh = () => { $('#roleHelp').textContent = ROLE_HELP[f.role.value]; };
+      f.role.onchange = rh; rh();
+      f.onsubmit = async ev => {
+        ev.preventDefault();
+        const b = Object.fromEntries(new FormData(f)); if (u.id) b.active = f.active.checked;
+        try { await api('users' + (u.id ? '/' + u.id : ''), { method: u.id ? 'PUT' : 'POST', body: b }); toast('Saved. Share the username and password with them privately.'); dlg.close(); viewTeam().catch(fail); } catch (err) { fail(err); }
+      };
+    };
+    $('#addUser').onclick = () => form({});
+    $('#main .vroot').addEventListener('click', e => { const b = e.target.closest('[data-uedit]'); if (b) form(d.users.find(u => u.id === Number(b.dataset.uedit))); });
+  }
+  async function changeMyPassword() {
+    const cur = prompt('Your current password'); if (!cur) return;
+    const next = prompt('New password (at least 8 characters)'); if (!next) return;
+    try { await api('password', { method: 'PUT', body: { current: cur, next } }); alert('Password changed. Please log in again.'); showLogin(); } catch (err) { fail(err); }
+  }
+
+  // ================= ACTIVITY LOG =================
+  let actF = { user: '', area: '', q: '' };
+  async function viewActivity() {
+    const d = await api('audit?' + new URLSearchParams(Object.entries(actF).filter(([, v]) => v)));
+    const areas = ['auth', 'acc', 'orders', 'products', 'users', 'settings', 'coupons', 'custom', 'fabrics', 'banners', 'reviews', 'chats', 'courier', 'sms'];
+    $('#main').innerHTML = `<div class="vroot"><div class="page-head"><div><h1>Activity log</h1><p class="muted">Who did what, and when. The latest 300 actions.</p></div></div>
+      <form class="filters" id="actF"><select name="user"><option value="">Everyone</option>${d.users.map(u => `<option ${actF.user === u ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select>
+        <select name="area"><option value="">All areas</option>${areas.map(a => `<option ${actF.area === a ? 'selected' : ''}>${a}</option>`).join('')}</select>
+        <input class="search" type="search" name="q" placeholder="Search details" value="${esc(actF.q)}"></form>
+      <div class="card flush"><table class="tbl act"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Area</th><th>Details</th></tr></thead><tbody>
+      ${d.rows.map(r => `<tr><td class="nowrap small">${fmtWhen(r.at)}</td><td><b>${esc(r.user_name || '')}</b></td><td><span class="act-a a-${esc(r.action).toLowerCase()}">${esc(r.action)}</span></td>
+        <td class="small">${esc(r.area)}${r.ref ? ` <span class="muted">${esc(r.ref)}</span>` : ''}</td><td class="small act-d">${esc(r.details)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Nothing yet.</td></tr>'}</tbody></table></div></div>`;
+    const f = $('#actF'); let t;
+    f.onchange = () => { actF = Object.fromEntries(new FormData(f)); viewActivity().catch(fail); };
+    f.q.oninput = () => { clearTimeout(t); t = setTimeout(() => { actF = Object.fromEntries(new FormData(f)); viewActivity().catch(fail); }, 400); };
+  }
+
   // ---------- start ----------
-  api('me').then(showApp).catch(e => { if (e.message !== 'auth') showLogin(); });
+  loadMe().then(showApp).catch(e => { if (e.message !== 'auth') showLogin(); });
 })();

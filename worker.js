@@ -73,6 +73,21 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS reviews (id INTEGER PRIMARY KEY AUTOINCREMENT, product_code TEXT NOT NULL, name TEXT NOT NULL, phone TEXT DEFAULT '', rating INTEGER NOT NULL,
     body TEXT DEFAULT '', status TEXT DEFAULT 'pending', verified INTEGER DEFAULT 0, ip TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_code, status)`,
+  `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'staff',
+    salt TEXT NOT NULL, hash TEXT NOT NULL, ver INTEGER DEFAULT 1, active INTEGER DEFAULT 1, last_login TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS login_fails (k TEXT PRIMARY KEY, n INTEGER DEFAULT 0, until INTEGER DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT DEFAULT CURRENT_TIMESTAMP, user_id INTEGER, user_name TEXT, action TEXT, area TEXT, ref TEXT DEFAULT '', details TEXT DEFAULT '')`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_at ON audit(at)`,
+  `CREATE TABLE IF NOT EXISTS acc_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'cash', opening INTEGER DEFAULT 0, active INTEGER DEFAULT 1, sort INTEGER DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS acc_categories (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, active INTEGER DEFAULT 1, sort INTEGER DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS acc_partners (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT DEFAULT '', target INTEGER DEFAULT 0, share_pct REAL DEFAULT 0, active INTEGER DEFAULT 1, sort INTEGER DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS acc_target_log (id INTEGER PRIMARY KEY AUTOINCREMENT, partner_id INTEGER, old_target INTEGER, new_target INTEGER, note TEXT DEFAULT '', by_name TEXT, at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS acc_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, type TEXT NOT NULL, category_id INTEGER, amount INTEGER NOT NULL,
+    account_id INTEGER, to_account_id INTEGER, partner_id INTEGER, person TEXT DEFAULT '', ref TEXT DEFAULT '', note TEXT DEFAULT '', attachment TEXT DEFAULT '',
+    source TEXT DEFAULT 'manual', order_no TEXT, import_id TEXT, created_by TEXT DEFAULT '', updated_by TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT '')`,
+  `CREATE INDEX IF NOT EXISTS idx_acc_day ON acc_entries(day)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_acc_order ON acc_entries(order_no) WHERE order_no IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_acc_import ON acc_entries(import_id) WHERE import_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, category TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS banners (id INTEGER PRIMARY KEY AUTOINCREMENT, image TEXT NOT NULL, title_en TEXT DEFAULT '', title_bn TEXT DEFAULT '', text_en TEXT DEFAULT '', text_bn TEXT DEFAULT '',
     btn_en TEXT DEFAULT '', btn_bn TEXT DEFAULT '', link TEXT DEFAULT '', sort INTEGER DEFAULT 0, active INTEGER DEFAULT 1)`,
@@ -153,6 +168,8 @@ async function ensureSchema(env) {
   if (!c.n) await seed(env);
   const f = await env.DB.prepare('SELECT COUNT(*) AS n FROM fabrics').first();
   if (!f.n) await seedFabrics(env);
+  const ac = await env.DB.prepare('SELECT COUNT(*) AS n FROM acc_accounts').first();
+  if (!ac.n) await seedAccounts(env);
   schemaReady = true;
 }
 
@@ -197,13 +214,55 @@ function getCookie(req, name) {
   const m = (req.headers.get('cookie') || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]+)'));
   return m ? m[1] : null;
 }
-async function isAdmin(req, env) {
-  if (!env.ADMIN_PASSWORD) return false;
+// লগইন করা মানুষটি কে: uid 0 = মালিক (ADMIN_PASSWORD দিয়ে), বাকিরা users টেবিল থেকে
+async function adminUser(req, env) {
+  if (!env.ADMIN_PASSWORD) return null;
   const tok = getCookie(req, 'ah_admin');
-  if (!tok) return false;
-  const [exp, sig] = tok.split('.');
-  if (!exp || !sig || Number(exp) < Date.now()) return false;
-  return sameBytes(enc.encode(sig), enc.encode(await hmac(env, exp)));
+  if (!tok) return null;
+  const [uid, exp, ver, sig] = tok.split('.');
+  if (!sig || Number(exp) < Date.now()) return null;
+  if (!sameBytes(enc.encode(sig), enc.encode(await hmac(env, `u:${uid}.${exp}.${ver}`)))) return null;
+  if (uid === '0') return { id: 0, name: 'Owner', username: 'owner', role: 'super' };
+  const u = await env.DB.prepare('SELECT id, name, username, role, ver, active FROM users WHERE id = ?').bind(int(uid)).first();
+  if (!u || !u.active || String(u.ver) !== ver) return null;
+  return u;
+}
+async function hashPassword(env, password, salt) {
+  // PBKDF2 + গোপন pepper (ADMIN_PASSWORD থেকে), তাই ডাটাবেস ফাঁস হলেও পাসওয়ার্ড বের করা যায় না
+  const key = await crypto.subtle.importKey('raw', enc.encode(password + '|' + (await hmac(env, 'pepper'))), 'PBKDF2', false, ['deriveBits']);
+  return b64url(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(salt), iterations: 20000 }, key, 256));
+}
+
+// ---------- কে কী করতে পারবে ----------
+const ROLES = {
+  super: 'Super admin', admin: 'Admin', accountant: 'Accountant', staff: 'Order staff', view: 'View only'
+};
+const AREAS = {
+  sales: ['orders', 'courier', 'chats', 'abandoned', 'customers', 'customer', 'fraud', 'stock-alerts'],
+  catalog: ['products', 'categories', 'custom', 'fabrics', 'gallery', 'upload', 'banners', 'reviews', 'coupons', 'sms', 'settings'],
+  money: ['stats', 'report', 'finance', 'expenses', 'acc'],
+  people: ['users', 'audit']
+};
+function can(user, res, method) {
+  if (res === 'me' || res === 'badges' || res === 'password') return true;
+  const r = user.role, read = method === 'GET';
+  if (r === 'super') return true;
+  if (AREAS.people.includes(res)) return r === 'admin' && res === 'audit' && read;
+  if (r === 'admin') return true;
+  if (r === 'view') return read;
+  if (r === 'accountant') return AREAS.money.includes(res) || (read && (AREAS.sales.includes(res) || res === 'products'));
+  if (r === 'staff') return AREAS.sales.includes(res) || (read && ['products', 'categories'].includes(res));
+  return false;
+}
+function permsOf(user) {
+  const all = [...AREAS.sales, ...AREAS.catalog, ...AREAS.money, ...AREAS.people, 'stats'];
+  return { read: all.filter(a => can(user, a, 'GET')), write: all.filter(a => can(user, a, 'POST')) };
+}
+async function audit(env, user, action, area, ref, details) {
+  try {
+    await env.DB.prepare('INSERT INTO audit (user_id, user_name, action, area, ref, details) VALUES (?,?,?,?,?,?)')
+      .bind(user ? user.id : null, user ? user.name : 'system', action, area, String(ref || '').slice(0, 60), String(details || '').slice(0, 1500)).run();
+  } catch (e) { console.error('audit', e); }
 }
 const cookie = (val, maxAge) => `ah_admin=${val}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`;
 
@@ -269,28 +328,34 @@ async function api(req, env, url, ctx) {
     if (m === 'POST') return customerMessage(req, env, token, ctx);
   }
 
-  if (p === '/api/admin/login' && m === 'POST') {
-    if (!env.ADMIN_PASSWORD) return bad('ADMIN_PASSWORD secret is not set in Cloudflare yet.', 500);
-    const body = await readJson(req);
-    const ok = sameBytes(await sha(str(body && body.password, 200)), await sha(env.ADMIN_PASSWORD));
-    if (!ok) { await new Promise(r => setTimeout(r, 800)); return bad('Wrong password.', 401); }
-    const exp = String(Date.now() + 7 * 864e5);
-    return json({ ok: true }, 200, { 'set-cookie': cookie(`${exp}.${await hmac(env, exp)}`, 7 * 86400) });
-  }
+  if (p === '/api/admin/login' && m === 'POST') return adminLogin(req, env);
   if (p === '/api/admin/logout' && m === 'POST') return json({ ok: true }, 200, { 'set-cookie': cookie('', 0) });
 
   if (p.startsWith('/api/admin/')) {
-    if (!(await isAdmin(req, env))) return json({ error: 'auth', message: 'Please log in.' }, 401);
+    const user = await adminUser(req, env);
+    if (!user) return json({ error: 'auth', message: 'Please log in.' }, 401);
     if (m !== 'GET' && req.headers.get('x-admin') !== '1') return bad('Missing header.', 403);
-    return adminApi(req, env, p.slice('/api/admin/'.length), m, url, ctx);
+    const path = p.slice('/api/admin/'.length), res = path.split('/')[0];
+    if (!can(user, res, m)) return json({ error: 'forbidden', message: 'You do not have permission for this.' }, 403);
+    // সব পরিবর্তন লগে লেখা হয় (হিসাবের এন্ট্রি নিজেরা আরও বিস্তারিত লেখে)
+    let bodyText = '';
+    if (m !== 'GET' && res !== 'upload' && res !== 'acc') { try { bodyText = await req.clone().text(); } catch (e) { /* none */ } }
+    const resp = await adminApi(req, env, path, m, url, ctx, user);
+    if (m !== 'GET' && resp.status < 400 && res !== 'acc' && res !== 'password')
+      ctx.waitUntil(audit(env, user, m === 'DELETE' ? 'DELETE' : m === 'POST' ? 'ADD' : 'EDIT', res, path.split('/')[1] || '', bodyText.replace(/"(password|pass)":"[^"]*"/g, '"$1":"***"').slice(0, 600)));
+    return resp;
   }
   return json({ error: 'not_found' }, 404);
 }
 
-async function adminApi(req, env, path, m, url, ctx) {
+async function adminApi(req, env, path, m, url, ctx, user) {
   const [res, idStr] = path.split('/');
   const id = int(idStr, 0);
-  if (res === 'me') return json({ ok: true });
+  if (res === 'me') return json({ ok: true, user: { id: user.id, name: user.name, username: user.username, role: user.role, roleName: ROLES[user.role] }, perms: permsOf(user) });
+  if (res === 'password' && m === 'PUT') return changeOwnPassword(req, env, user);
+  if (res === 'users') return usersApi(req, env, m, id, user);
+  if (res === 'audit' && m === 'GET') return auditList(env, url);
+  if (res === 'acc') return accApi(req, env, path.split('/').slice(1), m, url, user);
   if (res === 'badges' && m === 'GET') return adminBadges(env);
   if (res === 'report' && m === 'GET') return json(await profitReport(env, url.searchParams.get('from'), url.searchParams.get('to'), url.searchParams.get('basis')));
   if (res === 'finance') {
@@ -298,16 +363,23 @@ async function adminApi(req, env, path, m, url, ctx) {
     if (m === 'PUT') return saveFinance(req, env);
   }
   if (res === 'expenses') {
+    // Profit & loss পেজের খরচ এখন হিসাবের খাতায় (Accounts) যায়
     if (m === 'POST') {
       const b = await readJson(req) || {};
       const day = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') ? b.day : new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
       const amount = Math.round(Number(b.amount) || 0);
       if (amount <= 0) return bad('Enter the amount.');
-      await env.DB.prepare('INSERT INTO expenses (day, category, amount, note) VALUES (?,?,?,?)').bind(day, str(b.category, 40) || 'Other', amount, str(b.note, 200)).run();
+      const cash = await env.DB.prepare("SELECT id FROM acc_accounts WHERE kind = 'cash' ORDER BY sort, id LIMIT 1").first();
+      const cat = await expenseCategory(env, b.category);
+      await env.DB.prepare("INSERT INTO acc_entries (day, type, category_id, amount, account_id, note, created_by) VALUES (?, 'out', ?, ?, ?, ?, ?)").bind(day, cat, amount, cash.id, str(b.note, 200), user.name).run();
       return json({ ok: true });
     }
-    if (m === 'DELETE' && id) { await env.DB.prepare('DELETE FROM expenses WHERE id = ?').bind(id).run(); return json({ ok: true }); }
+    if (m === 'DELETE' && id) {
+      if (!['super', 'admin'].includes(user.role)) return bad('Only an admin can delete entries.', 403);
+      await env.DB.prepare('DELETE FROM acc_entries WHERE id = ?').bind(id).run(); return json({ ok: true });
+    }
   }
+
   if (res === 'coupons') {
     if (m === 'GET') return json((await env.DB.prepare('SELECT * FROM coupons ORDER BY id DESC').all()).results);
     if (m === 'POST') return saveCoupon(req, env, 0);
@@ -810,6 +882,8 @@ async function updateOrder(req, env, id, ctx) {
   }
   await env.DB.batch(ops);
   if (b.status !== o.status) await orderSms(env, ctx, o, b.status);
+  if (b.status === 'delivered') await postOrderSale(env, { ...o, status: 'delivered' });
+  else if (o.status === 'delivered') await env.DB.prepare("DELETE FROM acc_entries WHERE order_no = ? AND source = 'order'").bind(o.order_no).run();
   return json({ ok: true });
 }
 
@@ -929,7 +1003,11 @@ async function steadfastStatus(env, id) {
     const d = await steadfast(env, 'status_by_cid/' + encodeURIComponent(o.consignment));
     const st = String(d.delivery_status || '');
     await env.DB.prepare('UPDATE orders SET courier_status = ? WHERE id = ?').bind(st, id).run();
-    if (st === 'delivered') await env.DB.prepare("UPDATE orders SET status = 'delivered' WHERE id = ? AND status = 'shipped'").bind(id).run();
+    if (st === 'delivered') {
+      await env.DB.prepare("UPDATE orders SET status = 'delivered' WHERE id = ? AND status = 'shipped'").bind(id).run();
+      const full = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+      if (full && full.status === 'delivered') await postOrderSale(env, full);
+    }
     return json({ ok: true, status: st });
   } catch (e) { if (e.user) return bad(e.message); throw e; }
 }
@@ -1486,8 +1564,12 @@ async function profitReport(env, from, to, basis, quick) {
     D.prepare('SELECT code, name_en, cost FROM products').all(),
     D.prepare('SELECT id, cost_per_gaj, per_thobe FROM fabrics').all(),
     getFinance(env),
-    D.prepare('SELECT * FROM expenses WHERE day BETWEEN ? AND ? ORDER BY day DESC, id DESC').bind(from, to).all()
+    D.prepare(`SELECT e.id, e.day, e.amount, e.note, c.name AS category FROM acc_entries e JOIN acc_categories c ON c.id = e.category_id
+      WHERE e.type = 'out' AND c.kind = 'expense' AND e.day BETWEEN ? AND ? ORDER BY e.day DESC, e.id DESC`).bind(from, to).all()
   ]);
+  // দোকানে বা হাতে হাতে বিক্রি (ওয়েবসাইটের বাইরে) আর অন্য আয়
+  const other = await D.prepare(`SELECT COALESCE(SUM(e.amount), 0) AS v FROM acc_entries e JOIN acc_categories c ON c.id = e.category_id
+    WHERE e.type = 'in' AND c.kind IN ('revenue', 'other_income') AND e.source != 'order' AND e.day BETWEEN ? AND ?`).bind(from, to).first();
   const pc = Object.fromEntries(prods.results.map(p => [p.code, p])), fc = Object.fromEntries(fabs.results.map(f => [f.id, f]));
   const days = {}, byProd = {}, missing = new Set();
   const t = { orders: 0, pieces: 0, revenue: 0, deliveryCharged: 0, discounts: 0, goodsCost: 0, courierCost: 0, codFee: 0 };
@@ -1516,6 +1598,7 @@ async function profitReport(env, from, to, basis, quick) {
   const expTotal = exp.results.reduce((s, e) => s + e.amount, 0);
   const byCat = {};
   exp.results.forEach(e => { byCat[e.category] = (byCat[e.category] || 0) + e.amount; });
+  t.otherIncome = other.v; t.revenue += other.v;
   const gross = t.revenue - t.goodsCost - t.courierCost - t.codFee;
   const net = gross - expTotal;
   const out = { from, to, basis: basis === 'delivered' ? 'delivered' : 'all', ...t, gross, expenses: expTotal, net,
@@ -1526,4 +1609,457 @@ async function profitReport(env, from, to, basis, quick) {
     products: Object.values(byProd).map(p => ({ ...p, cost: Math.round(p.cost), profit: Math.round(p.revenue - p.cost), margin: p.revenue ? Math.round((p.revenue - p.cost) / p.revenue * 100) : 0 })).sort((a, b) => b.profit - a.profit),
     expenseList: exp.results, expenseByCat: Object.entries(byCat).map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount),
     missingNames: [...missing].map(k => k === 'CUSTOM' ? 'Custom thobe (set tailoring cost and fabric cost per gaj)' : (pc[k] ? `${pc[k].name_en} (${k})` : k)) };
+}
+
+// ================= v10: লগইন, ইউজার, অ্যাক্টিভিটি লগ =================
+async function adminLogin(req, env) {
+  if (!env.ADMIN_PASSWORD) return bad('ADMIN_PASSWORD secret is not set in Cloudflare yet.', 500);
+  const b = await readJson(req) || {};
+  const username = str(b.username, 40).toLowerCase(), password = str(b.password, 200);
+  // ভুল পাসওয়ার্ডে শুধু সেই ডিভাইস/ইন্টারনেট (IP) আটকায়, সবাইকে না
+  const key = 'ip:' + (clientIp(req) || 'x'), now = Date.now();
+  const f = await env.DB.prepare('SELECT * FROM login_fails WHERE k = ?').bind(key).first();
+  if (f && f.until > now) return bad(`Too many wrong tries. Try again in ${Math.ceil((f.until - now) / 60000)} minutes.`, 429);
+  let user = null;
+  if (!username || username === 'owner') {
+    if (sameBytes(await sha(password), await sha(env.ADMIN_PASSWORD))) user = { id: 0, ver: 0, name: 'Owner' };
+  } else {
+    const u = await env.DB.prepare('SELECT * FROM users WHERE username = ? AND active = 1').bind(username).first();
+    if (u && sameBytes(enc.encode(await hashPassword(env, password, u.salt)), enc.encode(u.hash))) user = u;
+  }
+  if (!user) {
+    const n = (f && f.until <= now && f.n >= 8 ? 0 : (f ? f.n : 0)) + 1;
+    await env.DB.prepare('INSERT INTO login_fails (k, n, until) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET n = excluded.n, until = excluded.until')
+      .bind(key, n, n >= 8 ? now + 15 * 60e3 : 0).run();
+    await new Promise(r => setTimeout(r, 600));
+    return bad('Wrong username or password.', 401);
+  }
+  await env.DB.prepare('DELETE FROM login_fails WHERE k = ?').bind(key).run();
+  if (user.id) await env.DB.prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?').bind(user.id).run();
+  await audit(env, { id: user.id, name: user.name }, 'LOGIN', 'auth', '', clientIp(req));
+  const exp = String(now + 7 * 864e5), ver = String(user.ver || 0);
+  return json({ ok: true }, 200, { 'set-cookie': cookie(`${user.id}.${exp}.${ver}.${await hmac(env, `u:${user.id}.${exp}.${ver}`)}`, 7 * 86400) });
+}
+
+async function changeOwnPassword(req, env, user) {
+  if (!user.id) return bad('The owner password is the ADMIN_PASSWORD secret in Cloudflare. Change it there.');
+  const b = await readJson(req) || {};
+  const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first();
+  if (!sameBytes(enc.encode(await hashPassword(env, str(b.current, 200), u.salt)), enc.encode(u.hash))) return bad('Your current password is wrong.');
+  if (str(b.next, 200).length < 8) return bad('The new password needs at least 8 characters.');
+  const salt = crypto.randomUUID();
+  await env.DB.prepare('UPDATE users SET salt = ?, hash = ?, ver = ver + 1 WHERE id = ?').bind(salt, await hashPassword(env, str(b.next, 200), salt), user.id).run();
+  await audit(env, user, 'EDIT', 'users', user.username, 'Changed own password');
+  return json({ ok: true, relogin: true });
+}
+
+async function usersApi(req, env, m, id, me) {
+  const D = env.DB;
+  if (m === 'GET') return json({ roles: ROLES, users: (await D.prepare('SELECT id, username, name, role, active, last_login, created_at FROM users ORDER BY active DESC, id').all()).results });
+  const b = await readJson(req) || {};
+  const role = ROLES[b.role] ? b.role : 'staff';
+  const supers = async () => (await D.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'super' AND active = 1").first()).n;
+  if (m === 'POST') {
+    const username = str(b.username, 40).toLowerCase().replace(/[^a-z0-9._-]/g, '');
+    if (username.length < 3 || username === 'owner') return bad('Username needs at least 3 letters (a–z, 0–9). "owner" is reserved.');
+    if (str(b.name, 60).length < 2) return bad('Write the person’s name.');
+    if (str(b.password, 200).length < 8) return bad('Password needs at least 8 characters.');
+    const salt = crypto.randomUUID();
+    try {
+      await D.prepare('INSERT INTO users (username, name, role, salt, hash) VALUES (?,?,?,?,?)').bind(username, str(b.name, 60), role, salt, await hashPassword(env, str(b.password, 200), salt)).run();
+    } catch (e) { return bad('This username is taken.'); }
+    await audit(env, me, 'ADD', 'users', username, `${str(b.name, 60)} as ${ROLES[role]}`);
+    return json({ ok: true });
+  }
+  const u = await D.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
+  if (!u) return bad('User not found.', 404);
+  if (m === 'PUT') {
+    const active = b.active === false ? 0 : 1;
+    if (u.role === 'super' && (role !== 'super' || !active) && (await supers()) <= 1 && me.id !== 0) return bad('Keep at least one active super admin.');
+    const sets = ['name = ?', 'role = ?', 'active = ?'], vals = [str(b.name, 60) || u.name, role, active];
+    let bump = role !== u.role || active !== u.active;
+    if (b.password) {
+      if (str(b.password, 200).length < 8) return bad('Password needs at least 8 characters.');
+      const salt = crypto.randomUUID();
+      sets.push('salt = ?', 'hash = ?'); vals.push(salt, await hashPassword(env, str(b.password, 200), salt)); bump = true;
+    }
+    if (bump) sets.push('ver = ver + 1'); // পুরনো লগইন বাতিল
+    await D.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).bind(...vals, id).run();
+    await audit(env, me, 'EDIT', 'users', u.username, `${u.role}→${role}${active ? '' : ', turned off'}${b.password ? ', new password' : ''}`);
+    return json({ ok: true });
+  }
+  if (m === 'DELETE') {
+    if (u.role === 'super' && (await supers()) <= 1 && me.id !== 0) return bad('Keep at least one active super admin.');
+    await D.prepare('UPDATE users SET active = 0, ver = ver + 1 WHERE id = ?').bind(id).run();
+    await audit(env, me, 'DELETE', 'users', u.username, 'Turned off');
+    return json({ ok: true });
+  }
+  return bad('Not allowed.', 405);
+}
+
+async function auditList(env, url) {
+  const q = str(url.searchParams.get('q'), 60), who = str(url.searchParams.get('user'), 60), area = str(url.searchParams.get('area'), 30);
+  const where = [], args = [];
+  if (who) { where.push('user_name = ?'); args.push(who); }
+  if (area) { where.push('area = ?'); args.push(area); }
+  if (q) { where.push('(details LIKE ? OR ref LIKE ?)'); args.push(`%${q}%`, `%${q}%`); }
+  const rows = (await env.DB.prepare(`SELECT * FROM audit ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY id DESC LIMIT 300`).bind(...args).all()).results;
+  const users = (await env.DB.prepare('SELECT DISTINCT user_name FROM audit ORDER BY user_name').all()).results.map(r => r.user_name);
+  return json({ rows, users });
+}
+
+// ================= v10: হিসাব (জমা-খরচ, অ্যাকাউন্ট, শেয়ারহোল্ডার) =================
+// ক্যাটাগরির ধরন: in: revenue (বিক্রি), capital (শেয়ার মূলধন), loan (ঋণ নেওয়া), other_income
+//                 out: expense (খরচ), stock (কাপড়/মাল কেনা), asset (মেশিন ইত্যাদি), payout (পার্টনারকে লাভ দেওয়া), loan_repay, courier (কুরিয়ার চার্জ)
+const IN_KINDS = ['revenue', 'capital', 'loan', 'other_income'], OUT_KINDS = ['expense', 'stock', 'asset', 'payout', 'loan_repay', 'courier'];
+async function seedAccounts(env) {
+  const D = env.DB;
+  const accs = [['Cash', 'cash'], ['bKash', 'bkash'], ['Nagad', 'nagad'], ['Bank', 'bank'], ['Courier (to receive)', 'courier']];
+  const ins = [['Share Capital', 'capital'], ['Sales', 'revenue'], ['Loan Received', 'loan'], ['Others', 'other_income']];
+  const outs = [['Fabric', 'stock'], ['Sutta/Button/Accessories', 'stock'], ['Sewing/Tailor Bill', 'expense'], ['Rong/Dye', 'expense'], ['Packaging', 'expense'],
+    ['Transport', 'expense'], ['Rent', 'expense'], ['Utility Bill', 'expense'], ['Salary', 'expense'], ['Marketing', 'expense'], ['Machine', 'asset'],
+    ['Courier charge', 'courier'], ['Profit paid to partner', 'payout'], ['Loan repayment', 'loan_repay'], ['Others', 'expense']];
+  const partners = ['Basir', 'Tamim', 'Soaib', 'Faruk', 'Noman'];
+  await D.batch([
+    ...accs.map((a, i) => D.prepare('INSERT INTO acc_accounts (name, kind, sort) VALUES (?,?,?)').bind(a[0], a[1], i)),
+    ...ins.map((c, i) => D.prepare("INSERT INTO acc_categories (type, name, kind, sort) VALUES ('in',?,?,?)").bind(c[0], c[1], i)),
+    ...outs.map((c, i) => D.prepare("INSERT INTO acc_categories (type, name, kind, sort) VALUES ('out',?,?,?)").bind(c[0], c[1], i)),
+    ...partners.map((n, i) => D.prepare('INSERT INTO acc_partners (name, target, share_pct, sort) VALUES (?,?,?,?)').bind(n, 50000, 20, i))
+  ]);
+  // আগের "Profit & loss" পেজের খরচগুলো হিসাবের খাতায় আনা
+  const old = (await D.prepare('SELECT * FROM expenses').all()).results;
+  if (old.length) {
+    const cash = (await D.prepare("SELECT id FROM acc_accounts WHERE kind = 'cash'").first()).id;
+    for (const e of old) {
+      const cat = await expenseCategory(env, e.category);
+      await D.prepare("INSERT INTO acc_entries (day, type, category_id, amount, account_id, note, source, created_by) VALUES (?, 'out', ?, ?, ?, ?, 'manual', 'system')").bind(e.day, cat, e.amount, cash, e.note || '').run();
+    }
+  }
+}
+async function expenseCategory(env, name) {
+  const n = str(name, 60) || 'Others';
+  const c = await env.DB.prepare("SELECT id FROM acc_categories WHERE type = 'out' AND lower(name) = lower(?)").bind(n).first();
+  if (c) return c.id;
+  return (await env.DB.prepare("INSERT INTO acc_categories (type, name, kind, sort) VALUES ('out', ?, 'expense', 50)").bind(n).run()).meta.last_row_id;
+}
+async function accSettings(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'acc'").first();
+  const v = row ? JSON.parse(row.value) : {};
+  return { profit_rule: ['equal', 'capital', 'custom'].includes(v.profit_rule) ? v.profit_rule : 'equal', profit_basis: v.profit_basis === 'all' ? 'all' : 'delivered', start_day: v.start_day || '' };
+}
+
+// ডেলিভারি হলে বিক্রির টাকা নিজে থেকেই জমা: বিকাশে পেমেন্ট হলে বিকাশে, নইলে কুরিয়ারের কাছে পাওনা
+async function postOrderSale(env, o) {
+  const D = env.DB;
+  const sales = await D.prepare("SELECT id FROM acc_categories WHERE type = 'in' AND kind = 'revenue' ORDER BY sort, id LIMIT 1").first();
+  const kind = o.payment === 'bkash' || o.paid ? 'bkash' : 'courier';
+  const acc = await D.prepare('SELECT id FROM acc_accounts WHERE kind = ? AND active = 1 ORDER BY sort, id LIMIT 1').bind(kind).first()
+    || await D.prepare("SELECT id FROM acc_accounts WHERE kind = 'cash' ORDER BY sort, id LIMIT 1").first();
+  if (!sales || !acc) return;
+  const day = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
+  await D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, note, source, order_no, created_by)
+    VALUES (?, 'in', ?, ?, ?, ?, ?, 'order', ?, 'website') ON CONFLICT DO NOTHING`).bind(day, sales.id, o.total, acc.id, o.name || '', 'Website order ' + o.order_no, o.order_no).run();
+}
+
+async function accApi(req, env, parts, m, url, user) {
+  const D = env.DB, [sub, idStr] = parts, id = int(idStr, 0);
+  const superOnly = () => user.role !== 'super' ? bad('Only a super admin can change this.', 403) : null;
+  if (sub === 'meta' && m === 'GET') return json(await accMeta(env));
+  if (sub === 'overview' && m === 'GET') return json(await accOverview(env, url.searchParams.get('from'), url.searchParams.get('to')));
+  if (sub === 'entries') {
+    if (m === 'GET') return accEntries(env, url);
+    if (m === 'POST') return saveEntry(req, env, 0, user);
+    if (m === 'PUT' && id) return saveEntry(req, env, id, user);
+    if (m === 'DELETE' && id) {
+      if (!['super', 'admin'].includes(user.role)) return bad('Only an admin can delete entries.', 403);
+      const e = await entryById(env, id);
+      if (!e) return bad('Entry not found.', 404);
+      await D.prepare('DELETE FROM acc_entries WHERE id = ?').bind(id).run();
+      await audit(env, user, 'DELETE', 'acc', 'TX-' + id, describeEntry(e));
+      return json({ ok: true });
+    }
+  }
+  if (sub === 'partner' && m === 'GET' && id) return partnerStatement(env, id);
+  if (sub === 'settle' && m === 'POST') return courierSettle(req, env, user);
+  // নিচের সব শুধু সুপার অ্যাডমিন
+  if (m !== 'GET') { const no = superOnly(); if (no) return no; }
+  if (sub === 'settings' && m === 'PUT') {
+    const b = await readJson(req) || {}, old = await accSettings(env);
+    const v = { profit_rule: ['equal', 'capital', 'custom'].includes(b.profit_rule) ? b.profit_rule : old.profit_rule, profit_basis: b.profit_basis === 'all' ? 'all' : 'delivered', start_day: /^\d{4}-\d{2}-\d{2}$/.test(b.start_day || '') ? b.start_day : '' };
+    await D.prepare("INSERT INTO settings (key, value) VALUES ('acc', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(JSON.stringify(v)).run();
+    await audit(env, user, 'EDIT', 'acc', 'settings', `Profit rule ${old.profit_rule}→${v.profit_rule}, basis ${v.profit_basis}`);
+    return json(v);
+  }
+  if (sub === 'partners' && (m === 'POST' || m === 'PUT')) return savePartner(req, env, id, user);
+  if (sub === 'targets' && m === 'PUT') { // সবার টার্গেট একসাথে
+    const b = await readJson(req) || {}, target = Math.max(0, int(b.target));
+    if (!target) return bad('Enter the new target.');
+    const list = (await D.prepare('SELECT id, target FROM acc_partners WHERE active = 1').all()).results;
+    const ops = list.filter(p => p.target !== target).flatMap(p => [D.prepare('UPDATE acc_partners SET target = ? WHERE id = ?').bind(target, p.id),
+      D.prepare('INSERT INTO acc_target_log (partner_id, old_target, new_target, note, by_name) VALUES (?,?,?,?,?)').bind(p.id, p.target, target, str(b.note, 200), user.name)]);
+    if (ops.length) await D.batch(ops);
+    await audit(env, user, 'EDIT', 'acc', 'targets', `All targets → ${target}${b.note ? ' (' + str(b.note, 200) + ')' : ''}`);
+    return json({ ok: true });
+  }
+  if (sub === 'accounts' && (m === 'POST' || m === 'PUT')) {
+    const b = await readJson(req) || {};
+    const f = [str(b.name, 60), ['cash', 'bkash', 'nagad', 'bank', 'courier', 'other'].includes(b.kind) ? b.kind : 'other', int(b.opening), b.active === false ? 0 : 1, int(b.sort)];
+    if (!f[0]) return bad('Write the account name.');
+    if (id) await D.prepare('UPDATE acc_accounts SET name=?, kind=?, opening=?, active=?, sort=? WHERE id=?').bind(...f, id).run();
+    else await D.prepare('INSERT INTO acc_accounts (name, kind, opening, active, sort) VALUES (?,?,?,?,?)').bind(...f).run();
+    await audit(env, user, id ? 'EDIT' : 'ADD', 'acc', 'account', `${f[0]} (${f[1]}), opening ${f[2]}`);
+    return json({ ok: true });
+  }
+  if (sub === 'categories' && (m === 'POST' || m === 'PUT')) {
+    const b = await readJson(req) || {}, type = b.type === 'in' ? 'in' : 'out';
+    const kinds = type === 'in' ? IN_KINDS : OUT_KINDS;
+    const f = [type, str(b.name, 60), kinds.includes(b.kind) ? b.kind : kinds[0], b.active === false ? 0 : 1, int(b.sort)];
+    if (!f[1]) return bad('Write the category name.');
+    if (id) await D.prepare('UPDATE acc_categories SET type=?, name=?, kind=?, active=?, sort=? WHERE id=?').bind(...f, id).run();
+    else await D.prepare('INSERT INTO acc_categories (type, name, kind, active, sort) VALUES (?,?,?,?,?)').bind(...f).run();
+    await audit(env, user, id ? 'EDIT' : 'ADD', 'acc', 'category', `${f[1]} (${f[0]}, ${f[2]})`);
+    return json({ ok: true });
+  }
+  if (sub === 'import' && m === 'POST') return importEntries(req, env, user);
+  if (sub === 'backfill' && m === 'POST') {
+    const list = (await D.prepare("SELECT * FROM orders WHERE status = 'delivered' AND order_no NOT IN (SELECT order_no FROM acc_entries WHERE order_no IS NOT NULL)").all()).results;
+    for (const o of list) await postOrderSale(env, o);
+    await audit(env, user, 'ADD', 'acc', 'backfill', `${list.length} delivered orders posted as sales`);
+    return json({ ok: true, posted: list.length });
+  }
+  return bad('Not found.', 404);
+}
+
+async function accMeta(env) {
+  const D = env.DB;
+  const [a, c, p, s] = await Promise.all([
+    D.prepare('SELECT * FROM acc_accounts ORDER BY sort, id').all(), D.prepare('SELECT * FROM acc_categories ORDER BY type, sort, id').all(),
+    D.prepare('SELECT * FROM acc_partners ORDER BY sort, id').all(), accSettings(env)]);
+  return { accounts: a.results, categories: c.results, partners: p.results, settings: s, inKinds: IN_KINDS, outKinds: OUT_KINDS };
+}
+async function entryById(env, id) {
+  return env.DB.prepare(`SELECT e.*, c.name AS category, c.kind, a.name AS account, t.name AS to_account, p.name AS partner FROM acc_entries e
+    LEFT JOIN acc_categories c ON c.id = e.category_id LEFT JOIN acc_accounts a ON a.id = e.account_id LEFT JOIN acc_accounts t ON t.id = e.to_account_id
+    LEFT JOIN acc_partners p ON p.id = e.partner_id WHERE e.id = ?`).bind(id).first();
+}
+const describeEntry = e => [e.day, e.type === 'in' ? 'Joma' : e.type === 'out' ? 'Khoroch' : 'Transfer', e.type === 'transfer' ? `${e.account} → ${e.to_account}` : `${e.category || ''}${e.partner ? ' (' + e.partner + ')' : ''}`, e.amount + ' tk', e.type === 'transfer' ? '' : e.account, e.note || ''].filter(Boolean).join(' | ');
+
+async function saveEntry(req, env, id, user) {
+  const D = env.DB, b = await readJson(req) || {};
+  const type = ['in', 'out', 'transfer'].includes(b.type) ? b.type : '';
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') ? b.day : '';
+  const amount = Math.round(Number(b.amount) || 0);
+  if (!type) return bad('Choose Joma, Khoroch or Transfer.');
+  if (!day) return bad('Choose the date.');
+  if (amount <= 0) return bad('The amount must be more than 0.');
+  const acc = await D.prepare('SELECT id FROM acc_accounts WHERE id = ?').bind(int(b.account_id)).first();
+  if (!acc) return bad('Choose the account (Cash, bKash…).');
+  let cat = null, to = null, partner = null;
+  if (type === 'transfer') {
+    to = await D.prepare('SELECT id FROM acc_accounts WHERE id = ?').bind(int(b.to_account_id)).first();
+    if (!to || to.id === acc.id) return bad('Choose a different account to move the money to.');
+  } else {
+    cat = await D.prepare('SELECT * FROM acc_categories WHERE id = ? AND type = ?').bind(int(b.category_id), type).first();
+    if (!cat) return bad('Choose the category.');
+    if (cat.kind === 'capital' || cat.kind === 'payout') {
+      partner = await D.prepare('SELECT id FROM acc_partners WHERE id = ?').bind(int(b.partner_id)).first();
+      if (!partner) return bad('Choose the shareholder.');
+    }
+  }
+  const before = id ? await entryById(env, id) : null;
+  if (id && !before) return bad('Entry not found.', 404);
+  if (before && before.source === 'order' && user.role !== 'super') return bad('This entry comes from a website order. Change the order instead.');
+  const attachment = imgKey(b.attachment);
+  const vals = [day, type, cat ? cat.id : null, amount, acc.id, to ? to.id : null, partner ? partner.id : null, str(b.person, 80), str(b.ref, 60), str(b.note, 300), attachment];
+  let newId = id;
+  if (id) {
+    await D.prepare('UPDATE acc_entries SET day=?, type=?, category_id=?, amount=?, account_id=?, to_account_id=?, partner_id=?, person=?, ref=?, note=?, attachment=?, updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
+      .bind(...vals, user.name, id).run();
+    if (before.attachment && before.attachment !== attachment) await env.IMAGES.delete(before.attachment);
+  } else {
+    newId = (await D.prepare('INSERT INTO acc_entries (day, type, category_id, amount, account_id, to_account_id, partner_id, person, ref, note, attachment, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(...vals, user.name).run()).meta.last_row_id;
+  }
+  const after = await entryById(env, newId);
+  await audit(env, user, id ? 'EDIT' : 'ADD', 'acc', 'TX-' + newId, id ? `Before: ${describeEntry(before)}  →  After: ${describeEntry(after)}` : describeEntry(after));
+  return json({ ok: true, id: newId });
+}
+
+async function accEntries(env, url) {
+  const g = k => str(url.searchParams.get(k), 80);
+  const where = [], args = [];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(g('from'))) { where.push('e.day >= ?'); args.push(g('from')); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(g('to'))) { where.push('e.day <= ?'); args.push(g('to')); }
+  if (['in', 'out', 'transfer'].includes(g('type'))) { where.push('e.type = ?'); args.push(g('type')); }
+  if (int(g('category'))) { where.push('e.category_id = ?'); args.push(int(g('category'))); }
+  if (int(g('account'))) { where.push('(e.account_id = ? OR e.to_account_id = ?)'); args.push(int(g('account')), int(g('account'))); }
+  if (int(g('partner'))) { where.push('e.partner_id = ?'); args.push(int(g('partner'))); }
+  if (g('source')) { where.push('e.source = ?'); args.push(g('source')); }
+  if (g('q')) { where.push("(e.note LIKE ? OR e.person LIKE ? OR e.ref LIKE ? OR e.order_no LIKE ? OR ('TX-' || e.id) = ?)"); const q = `%${g('q')}%`; args.push(q, q, q, q, g('q').toUpperCase()); }
+  const W = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const [rows, tot] = await Promise.all([
+    env.DB.prepare(`SELECT e.*, c.name AS category, c.kind, a.name AS account, t.name AS to_account, p.name AS partner FROM acc_entries e
+      LEFT JOIN acc_categories c ON c.id = e.category_id LEFT JOIN acc_accounts a ON a.id = e.account_id LEFT JOIN acc_accounts t ON t.id = e.to_account_id
+      LEFT JOIN acc_partners p ON p.id = e.partner_id ${W} ORDER BY e.day DESC, e.id DESC LIMIT 500`).bind(...args).all(),
+    env.DB.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN type = 'in' THEN amount END), 0) AS inn, COALESCE(SUM(CASE WHEN type = 'out' THEN amount END), 0) AS outt FROM acc_entries e ${W}`).bind(...args).first()
+  ]);
+  return json({ rows: rows.results, total: tot.n, sumIn: tot.inn, sumOut: tot.outt });
+}
+
+// প্রতিটি অ্যাকাউন্টে এখন কত টাকা
+async function balances(env) {
+  const D = env.DB;
+  const [accs, sums] = await Promise.all([
+    D.prepare('SELECT * FROM acc_accounts ORDER BY sort, id').all(),
+    D.prepare(`SELECT account_id AS id, SUM(CASE WHEN type = 'in' THEN amount WHEN type IN ('out', 'transfer') THEN -amount END) AS v FROM acc_entries GROUP BY account_id
+      UNION ALL SELECT to_account_id AS id, SUM(amount) AS v FROM acc_entries WHERE type = 'transfer' GROUP BY to_account_id`).all()
+  ]);
+  const by = {};
+  sums.results.forEach(r => { if (r.id != null) by[r.id] = (by[r.id] || 0) + (r.v || 0); });
+  return accs.results.map(a => ({ ...a, balance: (a.opening || 0) + (by[a.id] || 0) }));
+}
+
+async function partnersSummary(env) {
+  const D = env.DB, s = await accSettings(env);
+  const [ps, cap, pay] = await Promise.all([
+    D.prepare('SELECT * FROM acc_partners WHERE active = 1 ORDER BY sort, id').all(),
+    D.prepare("SELECT e.partner_id AS id, SUM(e.amount) AS v FROM acc_entries e JOIN acc_categories c ON c.id = e.category_id WHERE c.kind = 'capital' GROUP BY e.partner_id").all(),
+    D.prepare("SELECT e.partner_id AS id, SUM(e.amount) AS v FROM acc_entries e JOIN acc_categories c ON c.id = e.category_id WHERE c.kind = 'payout' GROUP BY e.partner_id").all()
+  ]);
+  const capBy = Object.fromEntries(cap.results.map(r => [r.id, r.v])), payBy = Object.fromEntries(pay.results.map(r => [r.id, r.v]));
+  const today = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
+  const pr = await profitReport(env, s.start_day || '2000-01-01', today, s.profit_basis, true);
+  const list = ps.results.map(p => ({ ...p, paid: capBy[p.id] || 0, taken: payBy[p.id] || 0 }));
+  const capTotal = list.reduce((t, p) => t + p.paid, 0), pctTotal = list.reduce((t, p) => t + (p.share_pct || 0), 0);
+  list.forEach(p => {
+    p.ratio = s.profit_rule === 'capital' ? (capTotal ? p.paid / capTotal : 0) : s.profit_rule === 'custom' ? (pctTotal ? (p.share_pct || 0) / pctTotal : 0) : (list.length ? 1 / list.length : 0);
+    p.due = Math.max(0, p.target - p.paid);
+    p.status = p.paid >= p.target && p.target > 0 ? 'Paid' : p.paid > 0 ? 'Partial' : 'Due';
+    p.profitShare = Math.round(pr.net * p.ratio);
+    p.balance = p.profitShare - p.taken;
+  });
+  return { partners: list, rule: s.profit_rule, basis: s.profit_basis, netProfit: pr.net, capTarget: list.reduce((t, p) => t + p.target, 0), capPaid: capTotal };
+}
+
+async function accOverview(env, from, to) {
+  const D = env.DB, ok = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
+  const today = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
+  to = ok(to) ? to : today; from = ok(from) ? from : today.slice(0, 8) + '01';
+  const y0 = new Date(Date.UTC(Number(to.slice(0, 4)), Number(to.slice(5, 7)) - 12, 1)).toISOString().slice(0, 10);
+  const [bal, period, cats, months, recent, parts, pr] = await Promise.all([
+    balances(env),
+    D.prepare(`SELECT COALESCE(SUM(CASE WHEN type = 'in' THEN amount END), 0) AS inn, COALESCE(SUM(CASE WHEN type = 'out' THEN amount END), 0) AS outt, COUNT(*) AS n FROM acc_entries WHERE day BETWEEN ? AND ?`).bind(from, to).first(),
+    D.prepare(`SELECT c.name, c.kind, c.type, SUM(e.amount) AS v FROM acc_entries e JOIN acc_categories c ON c.id = e.category_id WHERE e.day BETWEEN ? AND ? GROUP BY c.id ORDER BY v DESC`).bind(from, to).all(),
+    D.prepare(`SELECT substr(day, 1, 7) AS m, COALESCE(SUM(CASE WHEN type = 'in' THEN amount END), 0) AS inn, COALESCE(SUM(CASE WHEN type = 'out' THEN amount END), 0) AS outt FROM acc_entries WHERE day > ? GROUP BY m ORDER BY m`).bind(y0).all(),
+    D.prepare(`SELECT e.*, c.name AS category, c.kind, a.name AS account, t.name AS to_account, p.name AS partner FROM acc_entries e LEFT JOIN acc_categories c ON c.id = e.category_id
+      LEFT JOIN acc_accounts a ON a.id = e.account_id LEFT JOIN acc_accounts t ON t.id = e.to_account_id LEFT JOIN acc_partners p ON p.id = e.partner_id ORDER BY e.day DESC, e.id DESC LIMIT 10`).all(),
+    partnersSummary(env),
+    profitReport(env, from, to, 'all', true)
+  ]);
+  const stockBought = cats.results.filter(c => c.kind === 'stock').reduce((t, c) => t + c.v, 0);
+  return { from, to, accounts: bal, cashNow: bal.filter(a => a.kind !== 'courier' && a.active).reduce((t, a) => t + a.balance, 0),
+    courierDue: bal.filter(a => a.kind === 'courier').reduce((t, a) => t + a.balance, 0),
+    periodIn: period.inn, periodOut: period.outt, entries: period.n, categories: cats.results, months: months.results, recent: recent.results,
+    stockBought, profit: { net: pr.net, gross: pr.gross, revenue: pr.revenue, margin: pr.margin, missing: pr.missingCost.length }, ...parts };
+}
+
+async function partnerStatement(env, id) {
+  const D = env.DB;
+  const p = await D.prepare('SELECT * FROM acc_partners WHERE id = ?').bind(id).first();
+  if (!p) return bad('Not found.', 404);
+  const [rows, log, sum] = await Promise.all([
+    D.prepare(`SELECT e.*, c.name AS category, c.kind, a.name AS account FROM acc_entries e JOIN acc_categories c ON c.id = e.category_id LEFT JOIN acc_accounts a ON a.id = e.account_id
+      WHERE e.partner_id = ? ORDER BY e.day, e.id`).bind(id).all(),
+    D.prepare('SELECT * FROM acc_target_log WHERE partner_id = ? ORDER BY id').bind(id).all(),
+    partnersSummary(env)
+  ]);
+  return json({ partner: sum.partners.find(x => x.id === id) || { ...p, paid: 0, taken: 0 }, rule: sum.rule, netProfit: sum.netProfit, entries: rows.results, targetLog: log.results });
+}
+
+async function savePartner(req, env, id, user) {
+  const D = env.DB, b = await readJson(req) || {};
+  const name = str(b.name, 60);
+  if (!name) return bad('Write the shareholder’s name.');
+  const old = id ? await D.prepare('SELECT * FROM acc_partners WHERE id = ?').bind(id).first() : null;
+  if (id && !old) return bad('Not found.', 404);
+  // যে ঘর পাঠানো হয়নি সেটা আগের মতোই থাকে
+  const target = b.target == null || b.target === '' ? (old ? old.target : 0) : Math.max(0, int(b.target));
+  const pct = b.share_pct == null || b.share_pct === '' ? (old ? old.share_pct : 0) : Math.max(0, Math.min(100, Number(b.share_pct) || 0));
+  if (id) {
+    const ops = [D.prepare('UPDATE acc_partners SET name=?, phone=?, target=?, share_pct=?, active=?, sort=? WHERE id=?').bind(name, b.phone == null ? old.phone : str(b.phone, 20), target, pct, b.active === false ? 0 : 1, b.sort == null ? old.sort : int(b.sort), id)];
+    if (old.target !== target) ops.push(D.prepare('INSERT INTO acc_target_log (partner_id, old_target, new_target, note, by_name) VALUES (?,?,?,?,?)').bind(id, old.target, target, str(b.note, 200), user.name));
+    await D.batch(ops);
+    await audit(env, user, 'EDIT', 'acc', 'partner', `${name}${old.target !== target ? `: target ${old.target}→${target}` : ''}${old.share_pct !== pct ? `, share ${old.share_pct}%→${pct}%` : ''}`);
+  } else {
+    const r = await D.prepare('INSERT INTO acc_partners (name, phone, target, share_pct, sort) VALUES (?,?,?,?,?)').bind(name, str(b.phone, 20), target, pct, int(b.sort)).run();
+    await D.prepare('INSERT INTO acc_target_log (partner_id, old_target, new_target, note, by_name) VALUES (?,0,?,?,?)').bind(r.meta.last_row_id, target, 'New shareholder', user.name).run();
+    await audit(env, user, 'ADD', 'acc', 'partner', `${name}, target ${target}`);
+  }
+  return json({ ok: true });
+}
+
+// কুরিয়ার টাকা পাঠালে: কুরিয়ারের পাওনা থেকে ব্যাংক/বিকাশে, আর তাদের চার্জ খরচ হিসেবে
+async function courierSettle(req, env, user) {
+  const D = env.DB, b = await readJson(req) || {};
+  const received = Math.round(Number(b.received) || 0), charge = Math.round(Number(b.charge) || 0);
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') ? b.day : new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
+  const courier = await D.prepare("SELECT id FROM acc_accounts WHERE kind = 'courier' ORDER BY sort, id LIMIT 1").first();
+  const to = await D.prepare('SELECT id FROM acc_accounts WHERE id = ?').bind(int(b.to_account_id)).first();
+  if (!courier || !to || to.id === courier.id) return bad('Choose where the money came in.');
+  if (received <= 0 && charge <= 0) return bad('Enter the amount received.');
+  const ops = [];
+  if (received > 0) ops.push(D.prepare("INSERT INTO acc_entries (day, type, amount, account_id, to_account_id, ref, note, created_by) VALUES (?, 'transfer', ?, ?, ?, ?, ?, ?)")
+    .bind(day, received, courier.id, to.id, str(b.ref, 60), 'Courier payment ' + str(b.note, 200), user.name));
+  if (charge > 0) {
+    const cat = await D.prepare("SELECT id FROM acc_categories WHERE type = 'out' AND kind = 'courier' ORDER BY sort, id LIMIT 1").first();
+    ops.push(D.prepare("INSERT INTO acc_entries (day, type, category_id, amount, account_id, ref, note, created_by) VALUES (?, 'out', ?, ?, ?, ?, ?, ?)")
+      .bind(day, cat ? cat.id : null, charge, courier.id, str(b.ref, 60), 'Courier charges ' + str(b.note, 200), user.name));
+  }
+  await D.batch(ops);
+  await audit(env, user, 'ADD', 'acc', 'courier', `Received ${received}, charges ${charge}`);
+  return json({ ok: true });
+}
+
+// Google Sheet থেকে আনা: Entries শিটের CSV
+async function importEntries(req, env, user) {
+  const D = env.DB, b = await readJson(req) || {};
+  const rows = Array.isArray(b.rows) ? b.rows.slice(0, 3000) : [];
+  const meta = await accMeta(env);
+  const accBy = n => meta.accounts.find(a => a.name.toLowerCase() === String(n || '').trim().toLowerCase() || a.kind === String(n || '').trim().toLowerCase());
+  const guessKind = (type, name) => {
+    const n = name.toLowerCase();
+    if (type === 'in') return /capital/.test(n) ? 'capital' : /sale/.test(n) ? 'revenue' : /loan/.test(n) ? 'loan' : 'other_income';
+    return /fabric|kapor|sutta|button|accessor/.test(n) ? 'stock' : /machine/.test(n) ? 'asset' : /profit|dividend/.test(n) ? 'payout' : /loan/.test(n) ? 'loan_repay' : 'expense';
+  };
+  let added = 0, skipped = 0;
+  const errors = [];
+  for (const [i, r] of rows.entries()) {
+    const type = /^joma|^in/i.test(r.type) ? 'in' : /^khoroch|^out/i.test(r.type) ? 'out' : '';
+    const day = String(r.date || '').slice(0, 10), amount = Math.round(Number(String(r.amount || '').replace(/[^0-9.]/g, '')) || 0);
+    if (!type || !/^\d{4}-\d{2}-\d{2}$/.test(day) || amount <= 0) { errors.push(`Row ${i + 2}: missing type, date or amount`); continue; }
+    let catName = str(r.category, 60) || 'Others';
+    if (/^capital$/i.test(catName)) catName = 'Share Capital'; // আগের "Capital" আর "Share Capital" এক করা
+    let cat = meta.categories.find(c => c.type === type && c.name.toLowerCase() === catName.toLowerCase());
+    if (!cat) {
+      const kind = guessKind(type, catName);
+      const nid = (await D.prepare('INSERT INTO acc_categories (type, name, kind, sort) VALUES (?,?,?,60)').bind(type, catName, kind).run()).meta.last_row_id;
+      cat = { id: nid, type, name: catName, kind }; meta.categories.push(cat);
+    }
+    let acc = accBy(r.method) || accBy('cash');
+    let partner = null;
+    if (cat.kind === 'capital' || cat.kind === 'payout') {
+      const pn = str(r.shareholder || r.person, 60);
+      partner = meta.partners.find(p => p.name.toLowerCase() === pn.toLowerCase());
+      if (!partner && pn) {
+        const nid = (await D.prepare('INSERT INTO acc_partners (name, target) VALUES (?, 50000)').bind(pn).run()).meta.last_row_id;
+        partner = { id: nid, name: pn }; meta.partners.push(partner);
+      }
+    }
+    const res = await D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, partner_id, person, ref, note, source, import_id, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?, 'import', ?, ?) ON CONFLICT DO NOTHING`).bind(day, type, cat.id, amount, acc.id, partner ? partner.id : null, str(r.person, 80), str(r.ref, 60),
+      [str(r.description, 200), str(r.note, 100)].filter(Boolean).join(' · '), r.id ? 'sheet:' + str(r.id, 40) : `sheet:${day}:${amount}:${i}`, str(r.createdBy, 40) || user.name).run();
+    if (res.meta.changes) added++; else skipped++;
+  }
+  await audit(env, user, 'ADD', 'acc', 'import', `Imported ${added}, skipped ${skipped} already there, ${errors.length} with errors`);
+  return json({ ok: true, added, skipped, errors: errors.slice(0, 20) });
 }

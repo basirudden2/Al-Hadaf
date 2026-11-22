@@ -1420,8 +1420,10 @@
     if (k === 'year') return [today.slice(0, 4) + '-01-01', today];
     return [rep.from || today.slice(0, 8) + '01', rep.to || today];
   }
+  let ACC_OLD = '';
   async function viewReports() {
     const [from, to] = periodRange(rep.period);
+    if (canRead('acc')) { try { ACC_OLD = (await api('acc/meta')).settings.old_until || ''; } catch (e) { ACC_OLD = ''; } }
     const d = await api(`report?from=${from}&to=${to}&basis=${rep.basis}`);
     const fin = d.finance;
     const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
@@ -1434,6 +1436,7 @@
         ${rep.period === 'custom' ? `<label class="date-f">From <input type="date" id="rFrom" value="${from}"></label><label class="date-f">To <input type="date" id="rTo" value="${to}"></label>` : ''}
         <label class="check"><input type="checkbox" id="rBasis" ${rep.basis === 'delivered' ? 'checked' : ''}> Delivered orders only (money in hand)</label>
       </div>
+      ${ACC_OLD && from <= ACC_OLD ? `<p class="info-box">This page uses the <b>new rule</b>. For dates up to ${shortDay(ACC_OLD)} the Accounts and Shareholders pages use the old Google Sheet rule (sales − all khoroch), so their profit can differ for that period.</p>` : ''}
       ${d.missingCost.length ? `<p class="warn-box">The profit is an estimate: ${d.missingCost.length} item${d.missingCost.length > 1 ? 's have' : ' has'} no cost price yet, so their cost counts as 0. Add it in Products${d.missingCost.includes('CUSTOM') ? ' and in Tailoring (fabric cost per gaj) plus the tailoring cost below' : ''}.<br><span class="muted small">${d.missingNames.slice(0, 6).map(esc).join(' · ')}${d.missingNames.length > 6 ? ' …' : ''}</span></p>` : ''}
       <div class="kpis kpis-5">
         <div class="kpi"><span>Sales</span><strong>${money(d.revenue)}</strong><small>${plural(d.orders, 'order')} · ${d.pieces} pcs</small></div>
@@ -1513,6 +1516,16 @@
     payout: 'Money a partner takes from profit.', capital: 'Shareholder’s investment, not profit.', courier: 'Already estimated in Profit & loss from your courier rates.' };
   let ACC = null, accFilt = { from: '', to: '', type: '', category: '', account: '', partner: '', q: '' }, accPeriod = 'month';
   const todayBD = () => new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
+  const shortDay = d => new Date(d + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  // আগের নিয়ম + নতুন নিয়ম আলাদা করে দেখানো, যাতে পার্টনাররা Google Sheet-এর সাথে মেলাতে পারেন
+  function profitSplit(parts, total, perHead) {
+    if (!parts || !parts.old) return '';
+    const n = perHead || 1, ph = v => perHead ? ` <span class="muted">(each ${tk(Math.round(v / n))})</span>` : '';
+    return `<div class="psplit">
+      <div><span>Up to ${shortDay(parts.old.to)} <small>old rule, same as the Google Sheet: sales − all khoroch</small></span><b class="${parts.old.net < 0 ? 'down' : 'up'}">${tk(parts.old.net)}</b>${ph(parts.old.net)}</div>
+      ${parts.new ? `<div><span>From ${shortDay(parts.new.from)} <small>new rule: fabric is stock, machine is an asset</small></span><b class="${parts.new.net < 0 ? 'down' : 'up'}">${tk(parts.new.net)}</b>${ph(parts.new.net)}</div>` : ''}
+      <div class="ps-tot"><span>Total profit</span><b class="${total < 0 ? 'down' : 'up'}">${tk(total)}</b>${ph(total)}</div></div>`;
+  }
   const accTabs = sub => `<div class="acc-tabs">${[['overview', 'Overview'], ['book', 'Cash book'], ['partners', 'Shareholders'], ['settings', 'Settings', 'super'], ['import', 'Import from Google Sheet', 'super']]
     .filter(t => !t[2] || ME.user.role === 'super').map(([k, l]) => `<a href="#accounts/${k}" aria-current="${sub === k ? 'page' : 'false'}">${l}</a>`).join('')}</div>`;
   async function viewAccounts(sub) {
@@ -1543,7 +1556,7 @@
         <div class="kpi"><span>Courier owes you</span><strong>${tk(d.courierDue)}</strong><small>COD collected, not yet paid to you</small></div>
         <div class="kpi"><span>Joma (${from.slice(5)} to ${to.slice(5)})</span><strong class="up">${tk(d.periodIn)}</strong><small>${d.entries} entries</small></div>
         <div class="kpi"><span>Khoroch</span><strong class="down">${tk(d.periodOut)}</strong><small>stock bought ${tk(d.stockBought)}</small></div>
-        <a class="kpi kpi-link" href="#reports"><span>Net profit</span><strong class="${d.profit.net < 0 ? 'neg' : ''}">${tk(d.profit.net)}</strong><small>${d.profit.margin}% margin${d.profit.missing ? ` · <em class="down">${d.profit.missing} without cost</em>` : ''}</small></a>
+        <a class="kpi kpi-link" href="#reports"><span>Net profit</span><strong class="${d.profit.net < 0 ? 'neg' : ''}">${tk(d.profit.net)}</strong><small>${d.profit.old ? `old rule up to ${shortDay(d.profit.old.to)}` : `${d.profit.margin}% margin`}${d.profit.missing ? ` · <em class="down">${d.profit.missing} without cost</em>` : ''}</small></a>
       </div>
       <div class="acc-cards">${d.accounts.filter(a => a.active).map(a => `<a class="acard ak-${a.kind}" href="#accounts/book" data-acc="${a.id}"><span>${esc(a.name)}</span><strong class="${a.balance < 0 ? 'neg' : ''}">${tk(a.balance)}</strong></a>`).join('')}</div>
       <div class="dash-grid"><div class="dash-col">
@@ -1556,6 +1569,7 @@
           <p class="cap-line"><b>${tk(d.capPaid)}</b> of ${tk(d.capTarget)} <span class="muted">(${pct}%)</span></p><div class="cap-bar"><i style="--w:${pct}%"></i></div>
           <table class="tbl"><thead><tr><th>Name</th><th class="r">Paid</th><th class="r">Due</th><th class="r">Profit share</th></tr></thead><tbody>
           ${d.partners.map(p => `<tr><td><a href="#accounts/partners" class="plink" data-pid="${p.id}">${esc(p.name)}</a> <span class="pst pst-${p.status.toLowerCase()}">${p.status}</span></td><td class="r">${tk(p.paid)}</td><td class="r ${p.due ? 'down' : ''}">${tk(p.due)}</td><td class="r"><b class="${p.profitShare < 0 ? 'down' : ''}">${tk(p.profitShare)}</b></td></tr>`).join('')}</tbody></table>
+          ${profitSplit(d.profitParts, d.netProfit)}
           <p class="muted small">Profit to date ${tk(d.netProfit)}, ${ruleTxt}${d.basis === 'delivered' ? ', counting delivered orders' : ''}.</p></section>
         <section class="card"><h2>Where khoroch went</h2>${outCats.length ? donut(outCats.map(c => [c.name, c.v])) + `<ul class="exp-cats">${outCats.map((c, i) => `<li><span><i class="dot" style="--c:${PALETTE[i % PALETTE.length]}"></i>${esc(c.name)} <small class="muted">${KIND_LABEL[c.kind] && c.kind !== 'expense' ? '· ' + KIND_LABEL[c.kind] : ''}</small></span><i style="--w:${outTotal ? Math.round(c.v / outTotal * 100) : 0}%"></i><b>${tk(c.v)}</b></li>`).join('')}</ul>` : '<p class="muted">No khoroch in this period.</p>'}</section>
       </div></div>
@@ -1734,6 +1748,7 @@
         <div class="head-tools">${sup ? '<button class="btn ghost sm" id="allTarget">Change everyone’s target</button><button class="btn primary sm" id="addPartner">Add shareholder</button>' : ''}<span class="w-only"><button class="btn primary" data-new="in">+ Capital joma</button></span></div></div>
       ${accTabs('partners')}
       <section class="card cap-card"><div class="cap-top"><div><span class="muted">Capital collected</span><strong>${tk(d.capPaid)}</strong><span class="muted">of ${tk(d.capTarget)}</span></div><div class="cap-ring" style="--p:${pct}"><b>${pct}%</b></div></div>
+        ${profitSplit(d.profitParts, d.netProfit, d.rule === 'equal' ? d.partners.length : 0)}
         <p class="muted small">Profit to date: <b>${tk(d.netProfit)}</b> · rule: <b>${{ equal: 'equal shares', capital: 'by capital paid', custom: 'by set percentages' }[d.rule]}</b>${sup ? ' · <a href="#accounts/settings" class="link">change</a>' : ''}</p></section>
       <div class="partner-grid">${d.partners.map(p => `<article class="card pcard">
         <div class="pc-head"><span class="pav">${esc(p.name.charAt(0))}</span><div><h3>${esc(p.name)}</h3><span class="pst pst-${p.status.toLowerCase()}">${p.status}</span> <span class="muted small">${Math.round(p.ratio * 1000) / 10}% of profit</span></div></div>
@@ -1786,6 +1801,7 @@
         <button class="btn ghost sm noprint" onclick="print()">Print</button></div>
       <div class="stmt-kpis"><div><span>Target</span><b>${tk(p.target)}</b></div><div><span>Paid</span><b>${tk(p.paid)}</b></div><div><span>Due</span><b>${tk(p.due)}</b></div>
         <div><span>Profit share</span><b>${tk(p.profitShare)}</b></div><div><span>Taken</span><b>${tk(p.taken)}</b></div><div><span>Balance</span><b>${tk(p.balance)}</b></div></div>
+      ${d.profitParts && d.profitParts.old ? `<h3 class="sub">How the profit share is worked out</h3>${profitSplit(d.profitParts, d.netProfit)}<p class="muted small">${esc(p.name)}’s part: ${Math.round(p.ratio * 1000) / 10}% = ${tk(p.profitShare)}</p>` : ''}
       <h3 class="sub">Money in and out</h3>
       <table class="tbl"><thead><tr><th>Date</th><th>What</th><th>Account</th><th>Reference</th><th class="r">Amount</th><th class="r">Capital so far</th></tr></thead><tbody>
       ${d.entries.length ? d.entries.map(e => { if (e.kind === 'capital') run += e.amount; return `<tr><td>${esc(e.day)}</td><td>${e.kind === 'capital' ? 'Capital paid in' : 'Profit taken'}</td><td>${esc(e.account || '')}</td><td>${esc(e.ref || e.note || '')}</td><td class="r">${e.kind === 'capital' ? '+' : '−'} ${tk(e.amount)}</td><td class="r">${tk(run)}</td></tr>`; }).join('') : '<tr><td colspan="6" class="muted">No entries yet.</td></tr>'}</tbody></table>
@@ -1805,7 +1821,9 @@
         ${[['equal', 'Equal shares', 'Every active shareholder gets the same part.'], ['capital', 'By capital paid', 'Whoever has put in more capital gets more.'], ['custom', 'Set percentages', 'Use the profit % written on each shareholder.']]
           .map(([k, l, h]) => `<label class="opt-card"><input type="radio" name="profit_rule" value="${k}" ${s.profit_rule === k ? 'checked' : ''}><span><b>${l}</b><small>${h}</small></span></label>`).join('')}</div>
         <div class="g2"><label class="field"><span>Count profit from</span><select name="profit_basis"><option value="delivered" ${s.profit_basis === 'delivered' ? 'selected' : ''}>Delivered orders only (money received)</option><option value="all" ${s.profit_basis === 'all' ? 'selected' : ''}>All orders except cancelled</option></select></label>
-        <label class="field"><span>Business start date <small>profit counts from here</small></span><input type="date" name="start_day" value="${esc(s.start_day)}"></label></div>
+        <label class="field"><span>Business start date <small>profit counts from here</small></span><input type="date" name="start_day" value="${esc(s.start_day)}"></label>
+        <label class="field"><span>Old rule used up to <small>leave empty to use only the new rule</small></span><input type="date" name="old_until" value="${esc(s.old_until || '')}"></label>
+        <p class="muted small rule-help">Up to this date profit is worked out like your old Google Sheet: sales minus <b>all</b> khoroch, including fabric and machines. After it, fabric counts as stock and a machine as an asset. This keeps the old numbers your partners already know.</p></div>
         <button class="btn primary sm">Save</button></form></section>
       <section class="card"><div class="card-head"><h2>Accounts</h2><button class="btn ghost sm" data-addacc>Add account</button></div>
         <p class="muted small">Opening balance = money already in that account on the day you start using this.</p>

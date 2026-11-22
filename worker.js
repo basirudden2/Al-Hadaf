@@ -1763,7 +1763,28 @@ async function expenseCategory(env, name) {
 async function accSettings(env) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'acc'").first();
   const v = row ? JSON.parse(row.value) : {};
-  return { profit_rule: ['equal', 'capital', 'custom'].includes(v.profit_rule) ? v.profit_rule : 'equal', profit_basis: v.profit_basis === 'all' ? 'all' : 'delivered', start_day: v.start_day || '' };
+  // old_until: এই তারিখ পর্যন্ত আগের Google Sheet-এর নিয়ম (বিক্রি − সব খরচ); পরে নতুন নিয়ম। সেট না থাকলে ২২ নভেম্বর ২০২৬।
+  return { profit_rule: ['equal', 'capital', 'custom'].includes(v.profit_rule) ? v.profit_rule : 'equal', profit_basis: v.profit_basis === 'all' ? 'all' : 'delivered', start_day: v.start_day || '',
+    old_until: 'old_until' in v ? v.old_until : '2026-11-22' };
+}
+const nextDay = d => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10);
+// আগের নিয়ম, ঠিক Google Sheet-এর মতো: বিক্রি ও অন্য আয় − সব খরচ (কাপড়, মেশিন সহ; পার্টনারকে দেওয়া লাভ আর ঋণ শোধ বাদে)
+async function oldRuleProfit(env, from, to) {
+  const r = await env.DB.prepare(`SELECT COALESCE(SUM(CASE WHEN e.type = 'in' AND c.kind IN ('revenue', 'other_income') THEN e.amount END), 0) AS inc,
+      COALESCE(SUM(CASE WHEN e.type = 'out' AND c.kind IN ('expense', 'stock', 'asset', 'courier') THEN e.amount END), 0) AS out
+    FROM acc_entries e JOIN acc_categories c ON c.id = e.category_id WHERE e.day BETWEEN ? AND ?`).bind(from, to).first();
+  return { income: r.inc, khoroch: r.out, net: r.inc - r.out };
+}
+// দুই নিয়ম মিলিয়ে লাভ: old_until পর্যন্ত আগের নিয়ম, তারপর নতুন নিয়ম
+async function mixedProfit(env, from, to, basis) {
+  const s = await accSettings(env), cut = s.old_until;
+  let oldPart = null, newPart = null;
+  if (cut && from <= cut) oldPart = { from, to: to < cut ? to : cut, ...(await oldRuleProfit(env, from, to < cut ? to : cut)) };
+  const nf = cut && from <= cut ? nextDay(cut) : from;
+  if (nf <= to) { const pr = await profitReport(env, nf, to, basis, true); newPart = { from: nf, to, net: pr.net, revenue: pr.revenue, margin: pr.margin, missing: pr.missingCost.length }; }
+  const net = (oldPart ? oldPart.net : 0) + (newPart ? newPart.net : 0);
+  const revenue = (oldPart ? oldPart.income : 0) + (newPart ? newPart.revenue : 0);
+  return { net, revenue, margin: revenue ? Math.round(net / revenue * 1000) / 10 : 0, missing: newPart ? newPart.missing : 0, oldPart, newPart, cut };
 }
 
 // ডেলিভারি হলে বিক্রির টাকা নিজে থেকেই জমা: বিকাশে পেমেন্ট হলে বিকাশে, নইলে কুরিয়ারের কাছে পাওনা
@@ -1803,9 +1824,10 @@ async function accApi(req, env, parts, m, url, user) {
   if (m !== 'GET') { const no = superOnly(); if (no) return no; }
   if (sub === 'settings' && m === 'PUT') {
     const b = await readJson(req) || {}, old = await accSettings(env);
-    const v = { profit_rule: ['equal', 'capital', 'custom'].includes(b.profit_rule) ? b.profit_rule : old.profit_rule, profit_basis: b.profit_basis === 'all' ? 'all' : 'delivered', start_day: /^\d{4}-\d{2}-\d{2}$/.test(b.start_day || '') ? b.start_day : '' };
+    const v = { profit_rule: ['equal', 'capital', 'custom'].includes(b.profit_rule) ? b.profit_rule : old.profit_rule, profit_basis: b.profit_basis === 'all' ? 'all' : 'delivered', start_day: /^\d{4}-\d{2}-\d{2}$/.test(b.start_day || '') ? b.start_day : '',
+      old_until: /^\d{4}-\d{2}-\d{2}$/.test(b.old_until || '') ? b.old_until : '' };
     await D.prepare("INSERT INTO settings (key, value) VALUES ('acc', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(JSON.stringify(v)).run();
-    await audit(env, user, 'EDIT', 'acc', 'settings', `Profit rule ${old.profit_rule}→${v.profit_rule}, basis ${v.profit_basis}`);
+    await audit(env, user, 'EDIT', 'acc', 'settings', `Profit rule ${old.profit_rule}→${v.profit_rule}, basis ${v.profit_basis}, old rule until ${v.old_until || 'none'}`);
     return json(v);
   }
   if (sub === 'partners' && (m === 'POST' || m === 'PUT')) return savePartner(req, env, id, user);
@@ -1961,7 +1983,7 @@ async function partnersSummary(env) {
   ]);
   const capBy = Object.fromEntries(cap.results.map(r => [r.id, r.v])), payBy = Object.fromEntries(pay.results.map(r => [r.id, r.v]));
   const today = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
-  const pr = await profitReport(env, s.start_day || '2000-01-01', today, s.profit_basis, true);
+  const pr = await mixedProfit(env, s.start_day || '2000-01-01', today, s.profit_basis);
   const list = ps.results.map(p => ({ ...p, paid: capBy[p.id] || 0, taken: payBy[p.id] || 0 }));
   const capTotal = list.reduce((t, p) => t + p.paid, 0), pctTotal = list.reduce((t, p) => t + (p.share_pct || 0), 0);
   list.forEach(p => {
@@ -1971,7 +1993,7 @@ async function partnersSummary(env) {
     p.profitShare = Math.round(pr.net * p.ratio);
     p.balance = p.profitShare - p.taken;
   });
-  return { partners: list, rule: s.profit_rule, basis: s.profit_basis, netProfit: pr.net, capTarget: list.reduce((t, p) => t + p.target, 0), capPaid: capTotal };
+  return { partners: list, rule: s.profit_rule, basis: s.profit_basis, netProfit: pr.net, profitParts: { old: pr.oldPart, new: pr.newPart, cut: pr.cut }, capTarget: list.reduce((t, p) => t + p.target, 0), capPaid: capTotal };
 }
 
 async function accOverview(env, from, to) {
@@ -1987,13 +2009,13 @@ async function accOverview(env, from, to) {
     D.prepare(`SELECT e.*, c.name AS category, c.kind, a.name AS account, t.name AS to_account, p.name AS partner FROM acc_entries e LEFT JOIN acc_categories c ON c.id = e.category_id
       LEFT JOIN acc_accounts a ON a.id = e.account_id LEFT JOIN acc_accounts t ON t.id = e.to_account_id LEFT JOIN acc_partners p ON p.id = e.partner_id ORDER BY e.day DESC, e.id DESC LIMIT 10`).all(),
     partnersSummary(env),
-    profitReport(env, from, to, 'all', true)
+    mixedProfit(env, from, to, 'all')
   ]);
   const stockBought = cats.results.filter(c => c.kind === 'stock').reduce((t, c) => t + c.v, 0);
   return { from, to, accounts: bal, cashNow: bal.filter(a => a.kind !== 'courier' && a.active).reduce((t, a) => t + a.balance, 0),
     courierDue: bal.filter(a => a.kind === 'courier').reduce((t, a) => t + a.balance, 0),
     periodIn: period.inn, periodOut: period.outt, entries: period.n, categories: cats.results, months: months.results, recent: recent.results,
-    stockBought, profit: { net: pr.net, gross: pr.gross, revenue: pr.revenue, margin: pr.margin, missing: pr.missingCost.length }, ...parts };
+    stockBought, profit: { net: pr.net, revenue: pr.revenue, margin: pr.margin, missing: pr.missing, old: pr.oldPart, new: pr.newPart, cut: pr.cut }, ...parts };
 }
 
 async function partnerStatement(env, id) {
@@ -2006,7 +2028,7 @@ async function partnerStatement(env, id) {
     D.prepare('SELECT * FROM acc_target_log WHERE partner_id = ? ORDER BY id').bind(id).all(),
     partnersSummary(env)
   ]);
-  return json({ partner: sum.partners.find(x => x.id === id) || { ...p, paid: 0, taken: 0 }, rule: sum.rule, netProfit: sum.netProfit, entries: rows.results, targetLog: log.results });
+  return json({ partner: sum.partners.find(x => x.id === id) || { ...p, paid: 0, taken: 0 }, rule: sum.rule, netProfit: sum.netProfit, profitParts: sum.profitParts, entries: rows.results, targetLog: log.results });
 }
 
 async function savePartner(req, env, id, user) {

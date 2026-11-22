@@ -227,10 +227,28 @@ async function adminUser(req, env) {
   if (!u || !u.active || String(u.ver) !== ver) return null;
   return u;
 }
-async function hashPassword(env, password, salt) {
-  // PBKDF2 + গোপন pepper (ADMIN_PASSWORD থেকে), তাই ডাটাবেস ফাঁস হলেও পাসওয়ার্ড বের করা যায় না
-  const key = await crypto.subtle.importKey('raw', enc.encode(password + '|' + (await hmac(env, 'pepper'))), 'PBKDF2', false, ['deriveBits']);
+// টিমের পাসওয়ার্ড: PBKDF2 + একবার তৈরি হওয়া গোপন pepper (ডাটাবেসে রাখা), তাই ADMIN_PASSWORD বদলালেও টিমের পাসওয়ার্ড ঠিক থাকে
+let pepperCache = null;
+async function pepper(env) {
+  if (pepperCache) return pepperCache;
+  let row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'pepper'").first();
+  if (!row) {
+    await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('pepper', ?) ON CONFLICT(key) DO NOTHING").bind(JSON.stringify(crypto.randomUUID() + crypto.randomUUID())).run();
+    row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'pepper'").first();
+  }
+  return (pepperCache = JSON.parse(row.value));
+}
+async function pbkdf(password, pep, salt) {
+  const key = await crypto.subtle.importKey('raw', enc.encode(password + '|' + pep), 'PBKDF2', false, ['deriveBits']);
   return b64url(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(salt), iterations: 20000 }, key, 256));
+}
+const hashPassword = async (env, password, salt) => pbkdf(password, await pepper(env), salt);
+// আগের সংস্করণে তৈরি পাসওয়ার্ড (ADMIN_PASSWORD-নির্ভর) মিললে নতুন পদ্ধতিতে বদলে রাখা হয়
+async function checkUserPassword(env, u, password) {
+  if (sameBytes(enc.encode(await hashPassword(env, password, u.salt)), enc.encode(u.hash))) return true;
+  if (!sameBytes(enc.encode(await pbkdf(password, await hmac(env, 'pepper'), u.salt)), enc.encode(u.hash))) return false;
+  await env.DB.prepare('UPDATE users SET hash = ? WHERE id = ?').bind(await hashPassword(env, password, u.salt), u.id).run();
+  return true;
 }
 
 // ---------- কে কী করতে পারবে ----------
@@ -1621,12 +1639,12 @@ async function adminLogin(req, env) {
   const f = await env.DB.prepare('SELECT * FROM login_fails WHERE k = ?').bind(key).first();
   if (f && f.until > now) return bad(`Too many wrong tries. Try again in ${Math.ceil((f.until - now) / 60000)} minutes.`, 429);
   let user = null;
-  if (!username || username === 'owner') {
-    if (sameBytes(await sha(password), await sha(env.ADMIN_PASSWORD))) user = { id: 0, ver: 0, name: 'Owner' };
-  } else {
+  // আগে টিমের কারও username/password মেলে কিনা, না মিললে মালিকের পাসওয়ার্ড (username যা-ই লেখা থাকুক)
+  if (username && username !== 'owner' && username !== 'admin') {
     const u = await env.DB.prepare('SELECT * FROM users WHERE username = ? AND active = 1').bind(username).first();
-    if (u && sameBytes(enc.encode(await hashPassword(env, password, u.salt)), enc.encode(u.hash))) user = u;
+    if (u && await checkUserPassword(env, u, password)) user = u;
   }
+  if (!user && sameBytes(await sha(password.trim()), await sha(env.ADMIN_PASSWORD.trim()))) user = { id: 0, ver: 0, name: 'Owner' };
   if (!user) {
     const n = (f && f.until <= now && f.n >= 8 ? 0 : (f ? f.n : 0)) + 1;
     await env.DB.prepare('INSERT INTO login_fails (k, n, until) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET n = excluded.n, until = excluded.until')
@@ -1645,7 +1663,7 @@ async function changeOwnPassword(req, env, user) {
   if (!user.id) return bad('The owner password is the ADMIN_PASSWORD secret in Cloudflare. Change it there.');
   const b = await readJson(req) || {};
   const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first();
-  if (!sameBytes(enc.encode(await hashPassword(env, str(b.current, 200), u.salt)), enc.encode(u.hash))) return bad('Your current password is wrong.');
+  if (!(await checkUserPassword(env, u, str(b.current, 200)))) return bad('Your current password is wrong.');
   if (str(b.next, 200).length < 8) return bad('The new password needs at least 8 characters.');
   const salt = crypto.randomUUID();
   await env.DB.prepare('UPDATE users SET salt = ?, hash = ?, ver = ver + 1 WHERE id = ?').bind(salt, await hashPassword(env, str(b.next, 200), salt), user.id).run();

@@ -75,7 +75,12 @@
       ${ME.user.id ? '<button class="su-pw" id="myPw" title="Change my password">Password</button>' : ''}`;
     const pw = $('#myPw'); if (pw) pw.onclick = changeMyPassword;
   }
-  async function loadMe() { ME = await api('me'); applyPerms(); }
+  async function loadMe() {
+    const d = await api('me');
+    // পুরনো worker.js থাকলে (শুধু admin.js আপলোড হলে) পুরো অনুমতি ধরে নেওয়া
+    ME = d && d.perms ? d : { user: { id: 0, name: 'Owner', role: 'super', roleName: 'Super admin' }, perms: { read: Object.values(TAB_PERM).concat(['stats']), write: Object.values(TAB_PERM) } };
+    applyPerms();
+  }
   function showApp() { $('#loginView').hidden = true; $('#appView').hidden = false; route(); pollBadges(); }
 
   $('#loginForm').addEventListener('submit', async e => {
@@ -86,7 +91,7 @@
       await api('login', { method: 'POST', body: { username: e.target.username.value.trim(), password: e.target.password.value } });
       e.target.reset(); await loadMe(); showApp();
     } catch (err) {
-      $('#loginErr').textContent = err.message; $('#loginErr').hidden = false;
+      $('#loginErr').textContent = err.message === 'Wrong username or password.' ? 'Wrong password. Owner: leave Username empty and type the ADMIN_PASSWORD from Cloudflare.' : err.message; $('#loginErr').hidden = false;
     }
     btn.disabled = false;
   });

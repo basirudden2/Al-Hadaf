@@ -11,6 +11,11 @@
   <meta property="og:type" content="website">
   <meta name="theme-color" content="#FFFFFF">
   <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#1A1A1A">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Al Hadaf">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600&family=Hind+Siliguri:wght@400;500;600&display=swap" rel="stylesheet">
@@ -69,6 +74,8 @@
 <dialog id="checkoutDialog" class="checkout-dialog"><div id="checkoutBody"></div></dialog>
 <dialog id="lightbox" class="lightbox"><div id="lbBody"></div></dialog>
 <dialog id="quickDialog" class="quick-dialog"><div id="quickBody"></div></dialog>
+<dialog id="sizeDialog" class="quick-dialog size-dialog"><div id="sizeBody"></div></dialog>
+<div class="install-bar" id="installBar" hidden></div>
 <dialog id="searchDialog" class="search-dialog"><div class="search-inner">
   <div class="search-bar"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
     <input id="searchInput" type="search" autocomplete="off" aria-label="Search"><button class="icon-btn" data-close aria-label="Close">×</button></div>
@@ -78,6 +85,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script src="/lang.js"></script>
+<script src="/thobe.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

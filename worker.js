@@ -73,6 +73,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS reviews (id INTEGER PRIMARY KEY AUTOINCREMENT, product_code TEXT NOT NULL, name TEXT NOT NULL, phone TEXT DEFAULT '', rating INTEGER NOT NULL,
     body TEXT DEFAULT '', status TEXT DEFAULT 'pending', verified INTEGER DEFAULT 0, ip TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_code, status)`,
+  `CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, category TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS banners (id INTEGER PRIMARY KEY AUTOINCREMENT, image TEXT NOT NULL, title_en TEXT DEFAULT '', title_bn TEXT DEFAULT '', text_en TEXT DEFAULT '', text_bn TEXT DEFAULT '',
     btn_en TEXT DEFAULT '', btn_bn TEXT DEFAULT '', link TEXT DEFAULT '', sort INTEGER DEFAULT 0, active INTEGER DEFAULT 1)`,
   `CREATE TABLE IF NOT EXISTS abandoned (id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT UNIQUE NOT NULL, name TEXT DEFAULT '', address TEXT DEFAULT '', area TEXT DEFAULT '',
@@ -101,7 +102,9 @@ const MIGRATIONS = [
   `ALTER TABLE fabrics ADD COLUMN origin TEXT DEFAULT ''`,
   `ALTER TABLE fabrics ADD COLUMN season TEXT DEFAULT ''`,
   `ALTER TABLE fabrics ADD COLUMN stock REAL`,
-  `ALTER TABLE fabrics ADD COLUMN per_thobe REAL DEFAULT 3.5`
+  `ALTER TABLE fabrics ADD COLUMN per_thobe REAL DEFAULT 3.5`,
+  `ALTER TABLE products ADD COLUMN cost INTEGER`,
+  `ALTER TABLE fabrics ADD COLUMN cost_per_gaj REAL`
 ];
 
 const DEFAULT_SHOP = {
@@ -119,18 +122,24 @@ const DEFAULT_CUSTOM = {
   enabled: true, base_price: 2200, lead_days: 7,
   sizes: ['XS/52', 'S/54', 'M/56', 'L/58', 'XL/60', '2XL/62'],
   groups: [
-    { key: 'style', name_en: 'Style', name_bn: 'স্টাইল', options: [
+    { key: 'style', name_en: 'Cut', name_bn: 'কাট', options: [
       { en: 'Saudi', bn: 'সৌদি', add: 0 }, { en: 'Omani', bn: 'ওমানি', add: 0 }, { en: 'Kuwaiti', bn: 'কুয়েতি', add: 0 }, { en: 'Moroccan', bn: 'মরোক্কান', add: 300 }] },
     { key: 'collar', name_en: 'Collar', name_bn: 'কলার', options: [
-      { en: 'Saudi collar', bn: 'সৌদি কলার', add: 0 }, { en: 'Round neck, no collar', bn: 'গোল গলা, কলার ছাড়া', add: 0 }, { en: 'Mandarin collar', bn: 'চাইনিজ কলার', add: 0 }] },
-    { key: 'front', name_en: 'Front opening', name_bn: 'সামনের বোতাম', options: [
-      { en: 'Hidden buttons', bn: 'লুকানো বোতাম', add: 0 }, { en: 'Visible buttons', bn: 'খোলা বোতাম', add: 0 }, { en: 'Zip', bn: 'চেইন', add: 100 }] },
-    { key: 'cuff', name_en: 'Sleeve end', name_bn: 'হাতার মুখ', options: [
-      { en: 'Plain sleeve', bn: 'সাধারণ হাতা', add: 0 }, { en: 'Button cuff', bn: 'বোতাম কাফ', add: 0 }, { en: 'Cufflink cuff', bn: 'কাফলিংক কাফ', add: 150 }] },
-    { key: 'pocket', name_en: 'Pockets', name_bn: 'পকেট', options: [
-      { en: 'Chest pocket', bn: 'বুক পকেট', add: 0 }, { en: 'Two side pockets', bn: 'দুই পাশে পকেট', add: 0 }, { en: 'Chest and side pockets', bn: 'বুক আর পাশে পকেট', add: 100 }] }
+      { en: 'Shirt collar', bn: 'শার্ট কলার', add: 0, look: 'shirt' }, { en: 'Band collar (no collar)', bn: 'বেল্ট কলার (কলার ছাড়া)', add: 0, look: 'band' },
+      { en: 'Round neck', bn: 'গোল গলা', add: 0, look: 'round' }] },
+    { key: 'front', name_en: 'Front buttons', name_bn: 'সামনের বোতাম', options: [
+      { en: 'Hidden buttons', bn: 'লুকানো বোতাম', add: 0, look: 'hidden' }, { en: 'Visible buttons', bn: 'খোলা বোতাম', add: 0, look: 'visible' },
+      { en: 'Zip', bn: 'চেইন', add: 100, look: 'zip' }] },
+    { key: 'pocket', name_en: 'Pocket', name_bn: 'পকেট', options: [
+      { en: 'Left chest pocket', bn: 'বাম বুকে পকেট', add: 0, look: 'chest' }, { en: 'Left chest and side pockets', bn: 'বাম বুকে আর দুই পাশে পকেট', add: 100, look: 'chest_side' },
+      { en: 'Side pockets only', bn: 'শুধু দুই পাশে পকেট', add: 0, look: 'side' }, { en: 'No pocket', bn: 'পকেট ছাড়া', add: 0, look: 'none' }] },
+    { key: 'cuff', name_en: 'Sleeve', name_bn: 'হাতা', options: [
+      { en: 'Cuff sleeve with button', bn: 'কাফ হাতা (বোতাম)', add: 0, look: 'cuff' }, { en: 'Cufflink cuff', bn: 'কাফলিংক কাফ', add: 150, look: 'cufflink' },
+      { en: 'Plain sleeve (no cuff)', bn: 'সাধারণ হাতা (কাফ ছাড়া)', add: 0, look: 'plain' }] }
   ]
 };
+// কাস্টম জুব্বার ছবিতে কোন অপশন কেমন দেখাবে
+const LOOKS = ['shirt', 'band', 'round', 'hidden', 'visible', 'zip', 'chest', 'chest_side', 'side', 'none', 'cuff', 'cufflink', 'plain'];
 // মাপ ইঞ্চিতে; [সর্বনিম্ন, সর্বোচ্চ, বাধ্যতামূলক কি না]
 const MEASURES = { length: [36, 70, 1], chest: [26, 70, 1], shoulder: [12, 26, 1], sleeve: [14, 32, 1], neck: [11, 24, 1], cuff: [5, 14, 0], waist: [22, 64, 0] };
 const FITS = ['regular', 'slim', 'loose'];
@@ -283,6 +292,22 @@ async function adminApi(req, env, path, m, url, ctx) {
   const id = int(idStr, 0);
   if (res === 'me') return json({ ok: true });
   if (res === 'badges' && m === 'GET') return adminBadges(env);
+  if (res === 'report' && m === 'GET') return json(await profitReport(env, url.searchParams.get('from'), url.searchParams.get('to'), url.searchParams.get('basis')));
+  if (res === 'finance') {
+    if (m === 'GET') return json(await getFinance(env));
+    if (m === 'PUT') return saveFinance(req, env);
+  }
+  if (res === 'expenses') {
+    if (m === 'POST') {
+      const b = await readJson(req) || {};
+      const day = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') ? b.day : new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
+      const amount = Math.round(Number(b.amount) || 0);
+      if (amount <= 0) return bad('Enter the amount.');
+      await env.DB.prepare('INSERT INTO expenses (day, category, amount, note) VALUES (?,?,?,?)').bind(day, str(b.category, 40) || 'Other', amount, str(b.note, 200)).run();
+      return json({ ok: true });
+    }
+    if (m === 'DELETE' && id) { await env.DB.prepare('DELETE FROM expenses WHERE id = ?').bind(id).run(); return json({ ok: true }); }
+  }
   if (res === 'coupons') {
     if (m === 'GET') return json((await env.DB.prepare('SELECT * FROM coupons ORDER BY id DESC').all()).results);
     if (m === 'POST') return saveCoupon(req, env, 0);
@@ -314,7 +339,7 @@ async function adminApi(req, env, path, m, url, ctx) {
   if (res === 'stats' && m === 'GET') return adminStats(env);
   if (res === 'customers' && m === 'GET') return adminCustomers(env, url);
   if (res === 'custom') {
-    if (m === 'GET') return json(await getCustom(env));
+    if (m === 'GET') return json({ ...(await getCustom(env)), defaults: DEFAULT_CUSTOM.groups });
     if (m === 'PUT') return saveCustom(req, env);
   }
   if (res === 'fabrics') {
@@ -406,7 +431,7 @@ async function getStore(env) {
     products,
     custom: custom.enabled ? {
       basePrice: custom.base_price, leadDays: custom.lead_days, sizes: custom.sizes,
-      groups: custom.groups.map(g => ({ key: g.key, name: { en: g.name_en, bn: g.name_bn }, options: g.options.map(o => ({ name: { en: o.en, bn: o.bn }, add: o.add })) })),
+      groups: custom.groups.map(g => ({ key: g.key, name: { en: g.name_en, bn: g.name_bn }, options: g.options.map(o => ({ name: { en: o.en, bn: o.bn }, add: o.add, look: o.look || '' })) })),
       fabrics: fabrics.results.map(f => ({ id: f.id, name: { en: f.name_en, bn: f.name_bn }, desc: { en: f.desc_en, bn: f.desc_bn }, add: f.price_add, hex: f.color_hex, gsm: f.gsm, image: f.image ? '/img/' + f.image : '',
         color: { en: f.color_en || '', bn: f.color_bn || f.color_en || '' }, family: f.family || '', composition: f.composition || '', origin: f.origin || '', season: f.season || '',
         left: f.stock == null ? null : Math.floor(f.stock / (f.per_thobe || 3.5)) }))
@@ -442,9 +467,12 @@ async function createOrder(req, env, ctx) {
     const cfg = await getCustom(env);
     if (!cfg.enabled) return bad('Custom orders are paused right now.');
     const fabrics = Object.fromEntries((await D.prepare('SELECT * FROM fabrics WHERE active = 1').all()).results.map(f => [f.id, f]));
+    const fin = await getFinance(env);
     for (const it of customRaw) {
       const line = buildCustomLine(it.custom, Math.min(5, Math.max(1, int(it.qty, 1))), cfg, fabrics);
       if (line.error) return bad(line.error);
+      const fb = fabrics[line.details.fabricId];
+      line.cost = fb && fb.cost_per_gaj != null && fin.tailoring_cost != null ? Math.round(fin.tailoring_cost + fb.cost_per_gaj * (fb.per_thobe || 3.5)) : null;
       customLines.push(line);
     }
   }
@@ -463,14 +491,14 @@ async function createOrder(req, env, ctx) {
   const lineItems = [], short = [];
   if (items.length) {
     const ids = [...new Set(items.map(i => i.sizeId))];
-    const rows = (await D.prepare(`SELECT s.id, s.label, s.stock, p.id AS pid, p.code, p.name_en, p.color_en, p.price, p.active
+    const rows = (await D.prepare(`SELECT s.id, s.label, s.stock, p.id AS pid, p.code, p.name_en, p.color_en, p.price, p.cost, p.active
       FROM product_sizes s JOIN products p ON p.id = s.product_id WHERE s.id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results;
     const byId = Object.fromEntries(rows.map(r => [r.id, r]));
     for (const it of items) {
       const r = byId[it.sizeId];
       if (!r || !r.active) { short.push({ sizeId: it.sizeId, available: 0 }); continue; }
       if (r.stock < it.qty) short.push({ sizeId: it.sizeId, available: r.stock, code: r.code, size: r.label });
-      lineItems.push({ sizeId: r.id, productId: r.pid, code: r.code, name: r.name_en, color: r.color_en, size: r.label, qty: it.qty, price: r.price });
+      lineItems.push({ sizeId: r.id, productId: r.pid, code: r.code, name: r.name_en, color: r.color_en, size: r.label, qty: it.qty, price: r.price, cost: r.cost == null ? null : r.cost });
     }
     if (short.length) { if (fabricUndo.length) await D.batch(fabricUndo); return json({ error: 'stock', message: 'Some items are out of stock.', short }, 409); }
 
@@ -521,7 +549,7 @@ function buildCustomLine(c, qty, cfg, fabrics) {
     const o = g.options[int(opts[g.key], 0)] || g.options[0];
     if (!o) continue;
     price += int(o.add);
-    chosen.push({ group: g.name_en, groupBn: g.name_bn, choice: o.en, choiceBn: o.bn, add: int(o.add) });
+    chosen.push({ group: g.name_en, groupBn: g.name_bn, choice: o.en, choiceBn: o.bn, add: int(o.add), look: o.look || '' });
   }
   let size, meas = null;
   const fit = FITS.includes(c.fitPref) ? c.fitPref : 'regular';
@@ -541,7 +569,7 @@ function buildCustomLine(c, qty, cfg, fabrics) {
   }
   return {
     custom: true, code: 'CUSTOM', name: 'Custom thobe', color: fab.name_en, size, qty, price,
-    details: { fabric: fab.name_en + (fab.color_en ? ', ' + fab.color_en : ''), fabricBn: fab.name_bn, fabricId: fab.id, perThobe: fab.per_thobe || 3.5, options: chosen, fit, meas, note: str(c.note, 300) }
+    details: { fabric: fab.name_en + (fab.color_en ? ', ' + fab.color_en : ''), fabricBn: fab.name_bn, fabricId: fab.id, perThobe: fab.per_thobe || 3.5, hex: fab.color_hex || '', image: fab.image || '', options: chosen, fit, meas, note: str(c.note, 300) }
   };
 }
 
@@ -663,7 +691,7 @@ async function saveProduct(req, env, id, ctx) {
     desc_en: str(b.desc_en), desc_bn: str(b.desc_bn), features_en: str(b.features_en), features_bn: str(b.features_bn),
     fabric_en: str(b.fabric_en, 150), fabric_bn: str(b.fabric_bn, 150), gsm: intOrNull(b.gsm),
     color_en: str(b.color_en, 60), color_bn: str(b.color_bn, 60), color_hex: hex,
-    price, compare_price: intOrNull(b.compare_price), badge_en: str(b.badge_en, 40), badge_bn: str(b.badge_bn, 40),
+    price, compare_price: intOrNull(b.compare_price), cost: intOrNull(b.cost), badge_en: str(b.badge_en, 40), badge_bn: str(b.badge_bn, 40),
     is_new: b.is_new ? 1 : 0, active: b.active ? 1 : 0, sort: int(b.sort), images: JSON.stringify(images)
   };
   const sizes = (Array.isArray(b.sizes) ? b.sizes : []).map((s, i) => ({ id: int(s.id), label: str(s.label, 30), stock: Math.max(0, int(s.stock)), sort: i })).filter(s => s.label);
@@ -918,7 +946,7 @@ async function saveCustom(req, env) {
   const groups = (Array.isArray(b.groups) ? b.groups : []).slice(0, 10).map((g, i) => ({
     key: str(g.key, 30).toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'opt' + i,
     name_en: str(g.name_en, 60), name_bn: str(g.name_bn, 60),
-    options: (Array.isArray(g.options) ? g.options : []).slice(0, 12).map(o => ({ en: str(o.en, 60), bn: str(o.bn, 60), add: Math.max(0, int(o.add)) })).filter(o => o.en)
+    options: (Array.isArray(g.options) ? g.options : []).slice(0, 12).map(o => ({ en: str(o.en, 60), bn: str(o.bn, 60), add: Math.max(0, int(o.add)), look: LOOKS.includes(o.look) ? o.look : '' })).filter(o => o.en)
   })).filter(g => g.name_en && g.options.length);
   const keys = groups.map(g => g.key);
   if (new Set(keys).size !== keys.length) return bad('Two option groups have the same key.');
@@ -940,7 +968,8 @@ async function saveFabric(req, env, id) {
     image: imgKey(b.image), gsm: intOrNull(b.gsm), active: b.active ? 1 : 0, sort: int(b.sort),
     color_en: str(b.color_en, 40), color_bn: str(b.color_bn, 40), family: str(b.family, 20), composition: str(b.composition, 80), origin: str(b.origin, 40), season: str(b.season, 40),
     stock: b.stock === '' || b.stock == null ? null : Math.max(0, Math.round(Number(b.stock) * 100) / 100) || 0,
-    per_thobe: Math.min(10, Math.max(0.5, Number(b.per_thobe) || 3.5))
+    per_thobe: Math.min(10, Math.max(0.5, Number(b.per_thobe) || 3.5)),
+    cost_per_gaj: b.cost_per_gaj === '' || b.cost_per_gaj == null ? null : Math.max(0, Number(b.cost_per_gaj) || 0)
   };
   const keys = Object.keys(f);
   if (id) {
@@ -1054,6 +1083,8 @@ async function adminStats(env) {
     D.prepare(`SELECT items FROM orders WHERE status != 'cancelled' AND created_at > datetime('now', '-30 days') LIMIT 3000`).all(),
     D.prepare(`SELECT COUNT(*) AS n FROM orders WHERE status IN ('new', 'confirmed') AND items LIKE '%"custom":true%'`).first()
   ]);
+  const todayIso = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
+  const mp = await profitReport(env, todayIso.slice(0, 8) + '01', todayIso, 'all', true);
   const lowFabrics = (await D.prepare('SELECT id, name_en, color_en, stock, per_thobe FROM fabrics WHERE active = 1 AND stock IS NOT NULL AND stock < per_thobe * 3 ORDER BY stock').all()).results;
   const top = {};
   for (const o of monthItems.results) {
@@ -1066,7 +1097,7 @@ async function adminStats(env) {
   return json({
     today: t, yesterday: y, week: w, month: m, all,
     daily: daily.results, statuses: Object.fromEntries(statuses.results.map(s => [s.status, s.n])),
-    recent: recent.results, lowStock: low.results, lowFabrics, unreadChats: chats.n, customers: customers.n, customOpen: customOpen.n,
+    recent: recent.results, lowStock: low.results, lowFabrics, monthProfit: { net: mp.net, gross: mp.gross, margin: mp.margin, missing: mp.missingCost.length }, unreadChats: chats.n, customers: customers.n, customOpen: customOpen.n,
     top: Object.values(top).sort((a, b) => b.qty - a.qty).slice(0, 6)
   });
 }
@@ -1427,4 +1458,72 @@ async function seoPage(req, env, url) {
     .on('meta[property="og:type"]', { element(e) { if (kind === 'p') e.setAttribute('content', 'product'); } })
     .on('head', { element(e) { e.append(head, { html: true }); } })
     .transform(new Response(page.body, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=300' } }));
+}
+
+// ================= v9: লাভ-ক্ষতির হিসাব =================
+async function getFinance(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'finance'").first();
+  const v = row ? JSON.parse(row.value) : {};
+  return { courier_inside: v.courier_inside ?? 60, courier_outside: v.courier_outside ?? 110, tailoring_cost: v.tailoring_cost ?? null, cod_fee_pct: v.cod_fee_pct ?? 1 };
+}
+async function saveFinance(req, env) {
+  const b = await readJson(req) || {};
+  const num = (v, d) => v === '' || v == null ? d : Math.max(0, Number(v) || 0);
+  const v = { courier_inside: num(b.courier_inside, 0), courier_outside: num(b.courier_outside, 0), tailoring_cost: num(b.tailoring_cost, null), cod_fee_pct: Math.min(5, num(b.cod_fee_pct, 0)) };
+  await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('finance', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(JSON.stringify(v)).run();
+  return json(v);
+}
+
+// অর্ডারের সময়ের কেনা দাম ব্যবহার হয়; পুরনো অর্ডারে না থাকলে এখনকার কেনা দাম ধরা হয়
+async function profitReport(env, from, to, basis, quick) {
+  const D = env.DB, okDay = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
+  const today = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
+  to = okDay(to) ? to : today; from = okDay(from) ? from : to.slice(0, 8) + '01';
+  const BD = "date(created_at, '+6 hours')";
+  const statusSql = basis === 'delivered' ? "status = 'delivered'" : "status != 'cancelled'";
+  const [orders, prods, fabs, fin, exp] = await Promise.all([
+    D.prepare(`SELECT ${BD} AS day, area, payment, paid, status, items, subtotal, delivery, discount, bundle_off, coupon, total FROM orders WHERE ${statusSql} AND ${BD} BETWEEN ? AND ? LIMIT 10000`).bind(from, to).all(),
+    D.prepare('SELECT code, name_en, cost FROM products').all(),
+    D.prepare('SELECT id, cost_per_gaj, per_thobe FROM fabrics').all(),
+    getFinance(env),
+    D.prepare('SELECT * FROM expenses WHERE day BETWEEN ? AND ? ORDER BY day DESC, id DESC').bind(from, to).all()
+  ]);
+  const pc = Object.fromEntries(prods.results.map(p => [p.code, p])), fc = Object.fromEntries(fabs.results.map(f => [f.id, f]));
+  const days = {}, byProd = {}, missing = new Set();
+  const t = { orders: 0, pieces: 0, revenue: 0, deliveryCharged: 0, discounts: 0, goodsCost: 0, courierCost: 0, codFee: 0 };
+  for (const o of orders.results) {
+    const items = JSON.parse(o.items || '[]');
+    let cost = 0;
+    for (const l of items) {
+      let c = l.cost;
+      if (c == null) {
+        if (l.custom) { const f = l.details && fc[l.details.fabricId]; c = f && f.cost_per_gaj != null && fin.tailoring_cost != null ? fin.tailoring_cost + f.cost_per_gaj * (f.per_thobe || 3.5) : null; }
+        else c = pc[l.code] ? pc[l.code].cost : null;
+      }
+      const key = l.custom ? 'CUSTOM' : l.code;
+      if (c == null) missing.add(key);
+      const bp = byProd[key] = byProd[key] || { code: key, name: l.custom ? 'Custom thobe' : l.name, qty: 0, revenue: 0, cost: 0, missing: false };
+      bp.qty += l.qty; bp.revenue += l.price * l.qty; bp.cost += (c || 0) * l.qty; if (c == null) bp.missing = true;
+      cost += (c || 0) * l.qty; t.pieces += l.qty;
+    }
+    const courier = o.area === 'outside' ? fin.courier_outside : fin.courier_inside;
+    const cod = o.payment === 'cod' ? Math.round(o.total * fin.cod_fee_pct / 100) : 0;
+    t.orders++; t.revenue += o.total; t.deliveryCharged += o.delivery; t.discounts += (o.discount || 0) + (o.bundle_off || 0);
+    t.goodsCost += Math.round(cost); t.courierCost += courier; t.codFee += cod;
+    const d = days[o.day] = days[o.day] || { day: o.day, revenue: 0, profit: 0, orders: 0 };
+    d.revenue += o.total; d.profit += o.total - cost - courier - cod; d.orders++;
+  }
+  const expTotal = exp.results.reduce((s, e) => s + e.amount, 0);
+  const byCat = {};
+  exp.results.forEach(e => { byCat[e.category] = (byCat[e.category] || 0) + e.amount; });
+  const gross = t.revenue - t.goodsCost - t.courierCost - t.codFee;
+  const net = gross - expTotal;
+  const out = { from, to, basis: basis === 'delivered' ? 'delivered' : 'all', ...t, gross, expenses: expTotal, net,
+    margin: t.revenue ? Math.round(net / t.revenue * 1000) / 10 : 0, missingCost: [...missing] };
+  if (quick) return out;
+  return { ...out, finance: fin,
+    daily: Object.values(days).map(d => ({ ...d, profit: Math.round(d.profit) })).sort((a, b) => a.day < b.day ? -1 : 1),
+    products: Object.values(byProd).map(p => ({ ...p, cost: Math.round(p.cost), profit: Math.round(p.revenue - p.cost), margin: p.revenue ? Math.round((p.revenue - p.cost) / p.revenue * 100) : 0 })).sort((a, b) => b.profit - a.profit),
+    expenseList: exp.results, expenseByCat: Object.entries(byCat).map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount),
+    missingNames: [...missing].map(k => k === 'CUSTOM' ? 'Custom thobe (set tailoring cost and fabric cost per gaj)' : (pc[k] ? `${pc[k].name_en} (${k})` : k)) };
 }

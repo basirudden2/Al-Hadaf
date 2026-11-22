@@ -110,7 +110,7 @@
       dashboard: viewDashboard, orders: viewOrders, chats: () => viewChats(arg), customers: viewCustomers,
       products: viewProducts, product: () => viewProductEdit(arg), custom: viewCustom, gallery: viewGallery,
       categories: viewCategories, settings: viewSettings, coupons: viewCoupons, reviews: viewReviews,
-      abandoned: viewAbandoned, banners: viewBanners
+      abandoned: viewAbandoned, banners: viewBanners, reports: viewReports
     };
     (views[tab] || viewDashboard)().catch(fail);
   }
@@ -146,7 +146,7 @@
         <div class="kpi"><span>Today’s sales</span><strong>${money(d.today.rev)}</strong><small>${plural(d.today.n, 'order')}${diff == null ? '' : ` · <em class="${diff >= 0 ? 'up' : 'down'}">${diff >= 0 ? '+' : ''}${diff}% vs yesterday</em>`}</small></div>
         <div class="kpi"><span>Last 7 days</span><strong>${money(d.week.rev)}</strong><small>${plural(d.week.n, 'order')}</small></div>
         <div class="kpi"><span>Last 30 days</span><strong>${money(d.month.rev)}</strong><small>${plural(d.month.n, 'order')}</small></div>
-        <div class="kpi"><span>Average order</span><strong>${money(aov)}</strong><small>${plural(d.customers, 'customer')} in total</small></div>
+        <a class="kpi kpi-link" href="#reports"><span>Profit this month</span><strong class="${d.monthProfit.net < 0 ? 'neg' : ''}">${money(d.monthProfit.net)}</strong><small>${d.monthProfit.margin}% margin · avg order ${money(aov)}${d.monthProfit.missing ? ` · <em class="down">${d.monthProfit.missing} without cost</em>` : ''}</small></a>
       </div>
       <div class="dash-grid"><div class="dash-col">
         <section class="card chart-card"><div class="card-head"><h2>Sales, last 30 days</h2><span class="muted small">Cancelled orders not counted</span></div>${salesChart(d.daily)}</section>
@@ -236,6 +236,7 @@
       try { await api('orders/' + fm.dataset.id, { method: 'PUT', body: { admin_note: fm.note.value } }); toast('Note saved'); } catch (err) { fail(err); }
     }));
     $('#main').querySelectorAll('[data-print]').forEach(b => b.addEventListener('click', () => printInvoice(orders.find(o => String(o.id) === b.dataset.print))));
+    $('#main').querySelectorAll('[data-tailor]').forEach(b => b.addEventListener('click', () => printTailor(orders.find(o => String(o.id) === b.dataset.tailor))));
     $('#main').querySelectorAll('[data-fraud] button').forEach(b => b.addEventListener('click', () => runFraud(b.parentElement)));
     $('#main').querySelectorAll('[data-odel]').forEach(b => b.addEventListener('click', async () => {
       const o = orders.find(x => String(x.id) === b.dataset.odel);
@@ -278,10 +279,16 @@
     } catch (e) { box.innerHTML = ''; fail(e); }
   }
 
+  function customLooks(d) {
+    const T = window.AHThobe, out = { collar: 'shirt', front: 'hidden', pocket: 'chest', cuff: 'cuff' };
+    (d.options || []).forEach(o => { const lk = o.look || T.lookOf(o.group, { en: o.choice }); if (T.KIND[lk]) out[T.KIND[lk]] = lk; });
+    return out;
+  }
+  const thobePic = d => window.AHThobe.draw({ hex: d.hex || '#8A8C90', image: d.image ? '/img/' + d.image : '', ...customLooks(d) });
   function itemHtml(l) {
     if (!l.custom) return `<li><span>${esc(l.name)}, ${esc(l.color)} <span class="muted">${esc(l.code)}</span><br>Size ${esc(l.size)} × ${l.qty}</span><span>${money(l.price * l.qty)}</span></li>`;
     const d = l.details || {};
-    return `<li class="custom-item"><span><b class="tag">Custom</b> ${esc(l.name)} × ${l.qty}<br>
+    return `<li class="custom-item"><span class="ci-pic">${thobePic(d)}</span><span><b class="tag">Custom</b> ${esc(l.name)} × ${l.qty}<br>
       <span class="muted">Fabric:</span> ${esc(d.fabric)}<br>
       ${(d.options || []).map(o => `<span class="muted">${esc(o.group)}:</span> ${esc(o.choice)}`).join('<br>')}<br>
       ${d.meas ? `<span class="muted">Fit:</span> ${esc(d.fit)}<table class="meas-t">${Object.entries(d.meas).filter(([, v]) => v).map(([k, v]) => `<tr><td>${MEAS_NAMES[k] || k}</td><td>${esc(v)}${k === 'height' ? '' : '"'}</td></tr>`).join('')}</table>` : `<span class="muted">Size:</span> ${esc(l.size)}`}
@@ -325,6 +332,7 @@
           <a class="btn ghost sm" href="https://wa.me/88${esc(phone)}" target="_blank" rel="noopener">WhatsApp</a>
           <a class="btn ghost sm" href="tel:${esc(phone)}">Call</a>
           <button class="btn ghost sm" type="button" data-print="${o.id}">Print invoice</button>
+          ${o.items.some(l => l.custom) ? `<button class="btn ghost sm" type="button" data-tailor="${o.id}">Print tailor sheet</button>` : ''}
           ${o.consignment ? `<button class="btn ghost sm" type="button" data-cstatus="${o.id}">Check courier status</button>`
             : o.status !== 'cancelled' && o.status !== 'delivered' ? `<button class="btn ghost sm" type="button" data-courier="${o.id}">Send to Steadfast</button>` : ''}
           <span class="spacer"></span>
@@ -342,6 +350,31 @@
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = `al-hadaf-orders-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  // দর্জির জন্য: ছবি, কাপড়, স্টাইল, পুরো মাপ এক পাতায়
+  function printTailor(o) {
+    const w = window.open('', '_blank');
+    if (!w) return toast('Allow pop-ups to print.', true);
+    const pages = o.items.filter(l => l.custom).map((l, i) => { const d = l.details || {};
+      return `<section><header><div><h1>Tailor sheet</h1><p>${esc(o.order_no)} · ${esc(o.name)} · ${fmtWhen(o.created_at)}</p></div><div class="qty">× ${l.qty}</div></header>
+        <div class="cols"><div class="pic">${thobePic(d).replace('<svg ', '<svg width="300" height="560" ')}</div><div>
+          <h2>Fabric</h2><p class="big">${esc(d.fabric)}</p>
+          <h2>Style</h2><table>${(d.options || []).map(x => `<tr><td>${esc(x.group)}</td><td><b>${esc(x.choice)}</b></td></tr>`).join('')}</table>
+          <h2>${d.meas ? 'Measurements (inches)' : 'Size'}</h2>
+          ${d.meas ? `<table class="m">${Object.entries(d.meas).filter(([, v]) => v).map(([k, v]) => `<tr><td>${MEAS_NAMES[k] || k}</td><td><b>${esc(v)}</b></td></tr>`).join('')}<tr><td>Fit</td><td><b>${esc(d.fit || 'regular')}</b></td></tr></table>` : `<p class="big">${esc(l.size)}</p>`}
+          ${d.note ? `<h2>Customer note</h2><p class="note">${esc(d.note)}</p>` : ''}
+          <p class="small">Chest pocket on the wearer’s LEFT side.</p>
+        </div></div></section>`; }).join('');
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Tailor sheet ${esc(o.order_no)}</title><style>
+      body{font-family:system-ui,sans-serif;color:#1A1A1A;margin:0;padding:24px}section{max-width:760px;margin:0 auto 30px;page-break-after:always}
+      header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1A1A1A;padding-bottom:10px;margin-bottom:16px}
+      h1{font-size:22px;margin:0}header p{margin:4px 0 0;color:#555}.qty{font-size:28px;font-weight:700}.cols{display:flex;gap:28px}.pic{flex:none;background:#F4F2EE;border-radius:6px;padding:8px}
+      h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#777;margin:16px 0 6px}.big{font-size:18px;margin:0}
+      table{border-collapse:collapse;width:100%}td{padding:6px 8px;border-bottom:1px solid #ddd;font-size:15px}.m td b{font-size:18px}.note{background:#FFF6E5;padding:8px 10px}
+      .small{font-size:12px;color:#777;margin-top:18px}@media print{button{display:none}body{padding:0}}</style></head><body>${pages}
+      <button onclick="print()">Print</button><script>setTimeout(()=>print(),500)<\/script></body></html>`);
+    w.document.close();
   }
 
   function printInvoice(o) {
@@ -768,6 +801,7 @@
           <div class="g3">
             ${f('price', 'Price (BDT)', p.price, { type: 'number', req: true })}
             ${f('compare_price', 'Old price (BDT)', p.compare_price == null ? '' : p.compare_price, { type: 'number', hint: 'optional, shows as discount' })}
+            ${f('cost', 'Cost price (BDT)', p.cost == null ? '' : p.cost, { type: 'number', hint: 'what one piece costs you, only you see it' })}
             <div class="checks">
               <label class="check"><input type="checkbox" name="active" ${p.active ? 'checked' : ''}> Show on website</label>
               <label class="check"><input type="checkbox" name="is_new" ${p.is_new ? 'checked' : ''}> New arrival</label>
@@ -956,6 +990,10 @@
   }
 
   // ================= TAILORING (নিজের মাপে জুব্বা) =================
+  const LOOK_OPTS = [['', 'No picture'], ['shirt', 'Collar: shirt collar'], ['band', 'Collar: band (no collar)'], ['round', 'Collar: round neck'],
+    ['hidden', 'Front: hidden buttons'], ['visible', 'Front: visible buttons'], ['zip', 'Front: zip'],
+    ['chest', 'Pocket: left chest'], ['chest_side', 'Pocket: left chest + sides'], ['side', 'Pocket: sides only'], ['none', 'Pocket: none'],
+    ['cuff', 'Sleeve: cuff with button'], ['cufflink', 'Sleeve: cufflink cuff'], ['plain', 'Sleeve: plain']];
   async function viewCustom() {
     const [cfg, fabrics] = await Promise.all([api('custom'), api('fabrics')]);
     let groups = JSON.parse(JSON.stringify(cfg.groups));
@@ -978,7 +1016,7 @@
           <h2>Style options</h2>
           <p class="muted small">Each group is one choice the customer makes. The first option in each group is selected by default. “Extra” is added to the price.</p>
           <div id="groupsEd"></div>
-          <button type="button" class="btn ghost sm" id="addGroup">Add option group</button>
+          <div class="row-btns"><button type="button" class="btn ghost sm" id="addGroup">Add option group</button><button type="button" class="btn ghost sm" id="loadDefaults">Use recommended options with pictures</button></div>
         </section>
         <div class="save-bar"><span class="spacer"></span><button class="btn primary" type="submit">Save tailoring settings</button></div>
       </form>
@@ -997,11 +1035,12 @@
           <button type="button" class="icon" data-gmv="${gi}" data-d="-1" ${gi === 0 ? 'disabled' : ''} aria-label="Move up">↑</button>
           <button type="button" class="icon" data-gdel="${gi}" aria-label="Remove group">×</button>
         </div>
-        <div class="opt-head"><span>Option (English)</span><span>বাংলা</span><span>Extra (BDT)</span><span></span></div>
+        <div class="opt-head"><span>Option (English)</span><span>বাংলা</span><span>Extra (BDT)</span><span>Picture</span><span></span></div>
         ${g.options.map((o, oi) => `<div class="opt-row">
           <input data-g="${gi}" data-o="${oi}" data-k="en" value="${esc(o.en)}" aria-label="Option English">
           <input data-g="${gi}" data-o="${oi}" data-k="bn" value="${esc(o.bn)}" aria-label="Option Bangla">
           <input data-g="${gi}" data-o="${oi}" data-k="add" type="number" min="0" value="${o.add}" aria-label="Extra price">
+          <select data-g="${gi}" data-o="${oi}" data-k="look" aria-label="Picture">${LOOK_OPTS.map(([v, l]) => `<option value="${v}" ${(o.look || window.AHThobe.lookOf(g.key, o)) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
           <button type="button" class="icon" data-odel="${gi}:${oi}" aria-label="Remove option">×</button></div>`).join('')}
         <button type="button" class="text-btn" data-oadd="${gi}">+ Add option</button>
       </div>`).join('');
@@ -1020,6 +1059,8 @@
       if (b.dataset.oadd != null) groups[+b.dataset.oadd].options.push({ en: '', bn: '', add: 0 });
       drawGroups();
     });
+    $('#loadDefaults').addEventListener('click', () => { if (confirm('Replace the style options with the recommended set (collar, buttons, left pocket, sleeve) with pictures? Your fabrics and prices stay.')) { groups = JSON.parse(JSON.stringify(cfg.defaults)); drawGroups(); toast('Loaded. Check the prices and press Save.'); } });
+    $('#groupsEd').addEventListener('change', e => { const el = e.target; if (el.dataset.k === 'look') groups[el.dataset.g].options[el.dataset.o].look = el.value; });
     $('#addGroup').addEventListener('click', () => { groups.push({ key: 'opt' + Date.now().toString(36), name_en: '', name_bn: '', options: [{ en: '', bn: '', add: 0 }] }); drawGroups(); });
     drawGroups();
 
@@ -1066,6 +1107,7 @@
             <div class="g3"><label class="field"><span>Extra price (BDT)</span><input name="price_add" type="number" min="0" value="${f.price_add || 0}"></label>
               <label class="field"><span>GSM <small>optional</small></span><input name="gsm" type="number" min="0" value="${f.gsm == null ? '' : f.gsm}"></label>
               <label class="field"><span>Display order</span><input name="sort" type="number" value="${f.sort || 0}"></label></div>
+            <div class="g3"><label class="field"><span>Cost per gaj (BDT) <small>only you see it</small></span><input name="cost_per_gaj" type="number" min="0" step="1" value="${f.cost_per_gaj == null ? '' : f.cost_per_gaj}" placeholder="e.g. 320"></label></div>
             <div class="g3 stock-row"><label class="field"><span>In stock (gaj) <small>leave empty if you don’t count</small></span><input name="stock" type="number" min="0" step="0.25" value="${f.stock == null ? '' : f.stock}" placeholder="e.g. 120"></label>
               <label class="field"><span>Gaj per thobe</span><input name="per_thobe" type="number" min="0.5" max="10" step="0.25" value="${f.per_thobe || 3.5}"></label>
               <p class="muted small" id="stockHint"></p></div>
@@ -1338,6 +1380,102 @@
         viewReviews().catch(fail); pollBadges();
       } catch (err) { fail(err); }
     });
+  }
+
+  // ================= PROFIT & LOSS (লাভ-ক্ষতি) =================
+  const EXP_CATS = ['Facebook ads', 'Rent', 'Salary', 'Packaging', 'Tailoring wages', 'Electricity and internet', 'Transport', 'Other'];
+  let rep = { period: 'month', basis: 'all', from: '', to: '' };
+  function periodRange(k) {
+    const now = new Date(Date.now() + 6 * 3600e3), iso = d => d.toISOString().slice(0, 10), today = iso(now);
+    if (k === 'month') return [today.slice(0, 8) + '01', today];
+    if (k === 'last') { const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)); return [iso(d).slice(0, 8) + '01', iso(d)]; }
+    if (k === '30') return [iso(new Date(now - 29 * 864e5)), today];
+    if (k === 'year') return [today.slice(0, 4) + '-01-01', today];
+    return [rep.from || today.slice(0, 8) + '01', rep.to || today];
+  }
+  async function viewReports() {
+    const [from, to] = periodRange(rep.period);
+    const d = await api(`report?from=${from}&to=${to}&basis=${rep.basis}`);
+    const fin = d.finance;
+    const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
+    const bar = (label, v, cls) => `<div class="wf-row ${cls || ''}"><span>${label}</span><i style="--w:${d.revenue ? Math.min(100, Math.abs(v) / d.revenue * 100) : 0}%"></i><b>${v < 0 ? '−' : ''}${money(Math.abs(v))}</b></div>`;
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Profit &amp; loss</h1><p class="muted">${from} to ${to} · ${d.basis === 'delivered' ? 'delivered orders only' : 'all orders except cancelled'}</p></div>
+        <button class="btn ghost sm" id="repPrint">Print</button></div>
+      <div class="filters rep-filters">
+        <div class="chips">${[['month', 'This month'], ['last', 'Last month'], ['30', 'Last 30 days'], ['year', 'This year'], ['custom', 'Choose dates']].map(([k, l]) => `<button class="chip" data-period="${k}" aria-pressed="${rep.period === k}">${l}</button>`).join('')}</div>
+        ${rep.period === 'custom' ? `<label class="date-f">From <input type="date" id="rFrom" value="${from}"></label><label class="date-f">To <input type="date" id="rTo" value="${to}"></label>` : ''}
+        <label class="check"><input type="checkbox" id="rBasis" ${rep.basis === 'delivered' ? 'checked' : ''}> Delivered orders only (money in hand)</label>
+      </div>
+      ${d.missingCost.length ? `<p class="warn-box">The profit is an estimate: ${d.missingCost.length} item${d.missingCost.length > 1 ? 's have' : ' has'} no cost price yet, so their cost counts as 0. Add it in Products${d.missingCost.includes('CUSTOM') ? ' and in Tailoring (fabric cost per gaj) plus the tailoring cost below' : ''}.<br><span class="muted small">${d.missingNames.slice(0, 6).map(esc).join(' · ')}${d.missingNames.length > 6 ? ' …' : ''}</span></p>` : ''}
+      <div class="kpis kpis-5">
+        <div class="kpi"><span>Sales</span><strong>${money(d.revenue)}</strong><small>${plural(d.orders, 'order')} · ${d.pieces} pcs</small></div>
+        <div class="kpi"><span>Cost of goods</span><strong>${money(d.goodsCost)}</strong><small>${pct(d.goodsCost, d.revenue)}% of sales</small></div>
+        <div class="kpi"><span>Gross profit</span><strong>${money(d.gross)}</strong><small>after cost, courier and COD fee</small></div>
+        <div class="kpi"><span>Expenses</span><strong>${money(d.expenses)}</strong><small>ads, rent, salary…</small></div>
+        <div class="kpi kpi-net ${d.net < 0 ? 'neg' : ''}"><span>Net profit</span><strong>${d.net < 0 ? '−' : ''}${money(Math.abs(d.net))}</strong><small>${d.margin}% of sales</small></div>
+      </div>
+      <div class="dash-grid"><div class="dash-col">
+        <section class="card"><div class="card-head"><h2>Sales and profit by day</h2><span class="muted small"><i class="lg lg-s"></i> Sales <i class="lg lg-p"></i> Profit before expenses</span></div>${profitChart(d.daily, from, to)}</section>
+        <section class="card"><div class="card-head"><h2>Profit by product</h2></div>
+          ${d.products.length ? `<table class="tbl"><thead><tr><th>Product</th><th class="r">Sold</th><th class="r">Sales</th><th class="r">Cost</th><th class="r">Profit</th><th class="r">Margin</th></tr></thead><tbody>
+          ${d.products.map(p => `<tr><td>${esc(p.name)}<span class="muted block">${esc(p.code)}${p.missing ? ' · <em class="down">no cost price</em>' : ''}</span></td><td class="r">${p.qty}</td><td class="r">${money(p.revenue)}</td><td class="r">${money(p.cost)}</td><td class="r"><b class="${p.profit < 0 ? 'down' : ''}">${money(p.profit)}</b></td><td class="r"><span class="mbar" style="--m:${Math.max(0, p.margin)}%">${p.margin}%</span></td></tr>`).join('')}</tbody></table>`
+            : '<p class="muted">No sales in this period.</p>'}
+        </section>
+      </div><div class="dash-col">
+        <section class="card"><h2>Where the money went</h2><div class="wf">
+          ${bar('Sales (what customers paid)', d.revenue, 'pos')}
+          ${bar('Cost of goods', -d.goodsCost)}${bar('Courier charges', -d.courierCost)}${d.codFee ? bar('COD fee', -d.codFee) : ''}${bar('Expenses', -d.expenses)}
+          ${bar('Net profit', d.net, d.net < 0 ? 'neg' : 'net')}</div>
+          <p class="muted small">Customers paid ${money(d.deliveryCharged)} delivery charge (included in sales). Discounts given: ${money(d.discounts)}.</p></section>
+        <section class="card"><div class="card-head"><h2>Expenses</h2></div>
+          <form id="expForm" class="exp-form"><div class="g2">
+            <label class="field"><span>Date</span><input type="date" name="day" value="${to}"></label>
+            <label class="field"><span>Type</span><select name="category">${EXP_CATS.map(c => `<option>${c}</option>`).join('')}</select></label></div>
+            <div class="g2"><label class="field"><span>Amount (BDT)</span><input type="number" name="amount" min="1" required></label>
+            <label class="field"><span>Note <small>optional</small></span><input name="note" placeholder="Eid campaign"></label></div>
+            <button class="btn primary sm" type="submit">Add expense</button></form>
+          ${d.expenseByCat.length ? `<ul class="exp-cats">${d.expenseByCat.map(c => `<li><span>${esc(c.category)}</span><i style="--w:${pct(c.amount, d.expenses)}%"></i><b>${money(c.amount)}</b></li>`).join('')}</ul>` : ''}
+          ${d.expenseList.length ? `<ul class="mini-list exp-list">${d.expenseList.map(e => `<li><div class="exp-li"><span><strong>${esc(e.category)}</strong><span class="muted block">${esc(e.day)}${e.note ? ' · ' + esc(e.note) : ''}</span></span><span class="r">${money(e.amount)}<button class="text-btn" data-expdel="${e.id}">Delete</button></span></div></li>`).join('')}</ul>` : '<p class="muted small">No expenses in this period.</p>'}
+        </section>
+        <section class="card"><h2>Your costs</h2><p class="muted small">Used to work out profit. Only you see these.</p>
+          <form id="finForm"><div class="g2">
+            <label class="field"><span>Courier cost inside Dhaka</span><input type="number" name="courier_inside" min="0" value="${fin.courier_inside}"></label>
+            <label class="field"><span>Courier cost outside Dhaka</span><input type="number" name="courier_outside" min="0" value="${fin.courier_outside}"></label>
+            <label class="field"><span>COD fee (%) <small>courier keeps this from cash</small></span><input type="number" name="cod_fee_pct" min="0" max="5" step="0.1" value="${fin.cod_fee_pct}"></label>
+            <label class="field"><span>Tailoring cost per custom thobe</span><input type="number" name="tailoring_cost" min="0" value="${fin.tailoring_cost == null ? '' : fin.tailoring_cost}" placeholder="e.g. 600"></label></div>
+            <button class="btn primary sm" type="submit">Save costs</button></form></section>
+      </div></div></div>`;
+    const root = $('#main .vroot');
+    root.addEventListener('click', async e => {
+      const pb = e.target.closest('[data-period]'); if (pb) { rep.period = pb.dataset.period; viewReports().catch(fail); return; }
+      const del = e.target.closest('[data-expdel]');
+      if (del && confirm('Delete this expense?')) { try { await api('expenses/' + del.dataset.expdel, { method: 'DELETE' }); toast('Expense deleted'); viewReports().catch(fail); } catch (err) { fail(err); } }
+    });
+    $('#rBasis').addEventListener('change', e => { rep.basis = e.target.checked ? 'delivered' : 'all'; viewReports().catch(fail); });
+    ['rFrom', 'rTo'].forEach(id => { const el = $('#' + id); if (el) el.addEventListener('change', () => { rep.from = $('#rFrom').value; rep.to = $('#rTo').value; viewReports().catch(fail); }); });
+    $('#repPrint').addEventListener('click', () => window.print());
+    $('#expForm').addEventListener('submit', async e => { e.preventDefault(); try { await api('expenses', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast('Expense added'); viewReports().catch(fail); } catch (err) { fail(err); } });
+    $('#finForm').addEventListener('submit', async e => { e.preventDefault(); try { await api('finance', { method: 'PUT', body: Object.fromEntries(new FormData(e.target)) }); toast('Costs saved'); viewReports().catch(fail); } catch (err) { fail(err); } });
+  }
+  function profitChart(daily, from, to) {
+    const days = [];
+    for (let d = new Date(from + 'T00:00:00Z'); d <= new Date(to + 'T00:00:00Z') && days.length < 400; d = new Date(+d + 864e5)) days.push(d.toISOString().slice(0, 10));
+    const by = Object.fromEntries(daily.map(r => [r.day, r]));
+    const W = 720, H = 220, pad = 34, n = Math.max(1, days.length), bw = (W - pad - 10) / n;
+    const max = Math.max(1, ...days.map(d => by[d] ? Math.max(by[d].revenue, by[d].profit) : 0)), min = Math.min(0, ...days.map(d => by[d] ? by[d].profit : 0));
+    const y = v => 14 + (max - v) / (max - min) * (H - 40);
+    const lbl = v => Math.abs(v) >= 1000 ? Math.round(v / 1000) + 'k' : Math.round(v);
+    let s = [max, (max + min) / 2, min].map(v => `<line x1="${pad}" x2="${W}" y1="${y(v)}" y2="${y(v)}" class="gl"/><text x="${pad - 6}" y="${y(v) + 4}" class="ax" text-anchor="end">${lbl(v)}</text>`).join('');
+    const pts = [];
+    days.forEach((d, i) => {
+      const r = by[d] || { revenue: 0, profit: 0, orders: 0 }, x = pad + i * bw;
+      s += `<g><title>${d}: sales ${money(r.revenue)}, profit ${money(r.profit)} (${r.orders} orders)</title><rect x="${x + bw * .15}" y="${y(r.revenue)}" width="${Math.max(1, bw * .7)}" height="${Math.max(0, y(0) - y(r.revenue))}" rx="2" class="bs"/></g>`;
+      pts.push(`${x + bw / 2},${y(r.profit)}`);
+      if (n <= 31 ? (i % 5 === 0 || i === n - 1) : (d.endsWith('-01'))) s += `<text x="${x + bw / 2}" y="${H - 6}" class="ax" text-anchor="middle">${d.slice(5).replace('-', '/')}</text>`;
+    });
+    s += `<polyline points="${pts.join(' ')}" class="pl"/>`;
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Sales and profit by day">${s}</svg></div>`;
   }
 
   // ---------- start ----------

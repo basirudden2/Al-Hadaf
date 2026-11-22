@@ -198,7 +198,7 @@
             <h2>${esc(L(p.name))}</h2>
             <p class="pc-price"><strong>${money(p.price)}</strong>${pctOff(p) ? ` <s>${money(p.compare)}</s> <em>${pctOff(p)}% ${t('off')}</em>` : ''}</p>
             ${sib.length > 1 ? `<p class="opt-label">${t('color')}: <strong>${esc(L(p.color))}</strong></p><div class="swatches qk-sw">${sib.map(x => `<button class="swatch" data-qswap="${esc(x.id)}" style="--sw:${esc(x.color.hex)}" aria-label="${esc(L(x.color))}" aria-current="${x.id === p.id}"></button>`).join('')}</div>` : ''}
-            <p class="opt-label">${t('chooseSize')}</p>
+            <div class="opt-row"><p class="opt-label">${t('chooseSize')} <span class="fs-hint" data-fs-hint hidden></span></p>${p.shape === 'thobe' ? `<button class="link link-btn fs-btn" data-findsize>${t('findSize')}</button>` : ''}</div>
             <div class="sizes">${p.sizes.map(z => `<button class="size ${z.stock > 0 ? '' : 'out'}" data-qsize="${z.id}" aria-pressed="${chosen === z.id}" ${z.stock > 0 ? '' : `disabled title="${t('soldOut')}"`}>${esc(z.label)}</button>`).join('')}</div>
             <div class="buy-row"><div class="qty"><button data-qq="-1" aria-label="−">−</button><span>${qty}</span><button data-qq="1" aria-label="+">+</button></div>
               <button class="btn btn-dark" id="qkAdd">${t('addToCart')}</button></div>
@@ -207,12 +207,13 @@
           </div>
         </div>`;
     };
-    draw();
+    draw(); markRecommended();
     const dlg = $('#quickDialog');
     dlg.onclick = e => {
       if (e.target === dlg) return dlg.close();
       const sw = e.target.closest('[data-qswap]'); if (sw) { openQuick(sw.dataset.qswap); return; }
-      const sz = e.target.closest('[data-qsize]'); if (sz && !sz.disabled) { chosen = Number(sz.dataset.qsize); draw(); return; }
+      const sz = e.target.closest('[data-qsize]'); if (sz && !sz.disabled) { chosen = Number(sz.dataset.qsize); draw(); markRecommended(); return; }
+      if (e.target.closest('[data-findsize]')) { dlg.close(); openSizeFinder(null); return; }
       const q = e.target.closest('[data-qq]'); if (q) { const max = chosen ? Math.min(10, p.sizes.find(z => z.id === chosen).stock) : 10; qty = Math.min(max, Math.max(1, qty + Number(q.dataset.qq))); draw(); return; }
       if (e.target.closest('#qkAdd')) {
         if (!chosen) { $('#qkErr').textContent = t('chooseSize'); $('#qkErr').hidden = false; return; }
@@ -357,7 +358,7 @@
           <p class="opt-label">${t('color')}: <strong>${esc(L(p.color))}</strong></p>
           ${siblings.length > 1 ? `<div class="swatches">${siblings.map(s => `<a class="swatch" href="#/p/${s.id}" style="--sw:${s.color.hex}" aria-label="${esc(L(s.color))}" ${s.id === p.id ? 'aria-current="true"' : ''}></a>`).join('')}</div>` : ''}
 
-          <div class="opt-row"><p class="opt-label">${t('size')}</p>${(p.shape === 'thobe' || p.shape === 'combo') && p.sizes.length > 1 ? `<a class="link" href="#/page/size-guide">${t('sizeGuide')}</a>` : ''}</div>
+          <div class="opt-row"><p class="opt-label">${t('size')} <span class="fs-hint" data-fs-hint hidden></span></p>${(p.shape === 'thobe' || p.shape === 'combo') && p.sizes.length > 1 ? `<span class="size-links"><button class="link link-btn fs-btn" data-findsize>${t('findSize')}</button><a class="link" href="#/page/size-guide">${t('sizeGuide')}</a></span>` : ''}</div>
           <div class="sizes">${p.sizes.map(s => `<button class="size ${s.stock > 0 ? '' : 'out'}" data-size="${s.id}" aria-pressed="${p.sizes.length === 1 && s.stock > 0}" ${s.stock > 0 ? '' : `title="${t('soldOut')}" aria-label="${esc(s.label)}, ${t('soldOut')}"`}>${sizeHtml(s)}</button>`).join('')}</div>
           <div id="notifyBox"></div>
           <p class="muted small stock-note" id="stockNote"></p>
@@ -461,6 +462,7 @@
   // ---------- নিজের মাপে জুব্বা ----------
   const MEAS_FIELDS = [['length', 1], ['chest', 1], ['shoulder', 1], ['sleeve', 1], ['neck', 1], ['cuff', 0], ['waist', 0], ['height', 0]];
   const savedMeas = () => { try { return JSON.parse(store.get(MEAS_KEY) || 'null'); } catch (e) { return null; } };
+  const PRESETS = { saudi: { collar: 'shirt', front: 'hidden', pocket: 'chest', cuff: 'cuff' }, band: { collar: 'band', front: 'visible', pocket: 'chest', cuff: 'cuff' } };
   let cu = null;
   function cuInit() {
     if (cu && fabricOf(cu.fabric)) return;
@@ -488,8 +490,24 @@
           ${[f.composition, f.origin, f.gsm ? 'GSM ' + f.gsm : '', f.season].filter(Boolean).length ? `<small>${esc([f.composition, f.origin, f.gsm ? 'GSM ' + f.gsm : '', f.season].filter(Boolean).join(' · '))}</small>` : ''}
           ${L(f.desc) ? `<small>${esc(L(f.desc))}</small>` : ''}
           <b class="fc-price">${f.add ? '+' + money(f.add) : '&nbsp;'}</b></span></label>`).join('')}</div>`;
-    const groups = CUSTOM.groups.map(g => `<fieldset class="cu-group"><legend>${esc(L(g.name))}</legend><div class="chip-opts">${g.options.map((o, i) =>
-      `<label class="chip-opt"><input type="radio" name="opt-${esc(g.key)}" value="${i}" ${cu.opts[g.key] === i ? 'checked' : ''}><span>${esc(L(o.name))}${o.add ? ` <small>+${money(o.add)}</small>` : ''}</span></label>`).join('')}</div></fieldset>`).join('');
+    // স্টাইল: দুটি তৈরি স্টাইল (প্রিসেট), তারপর প্রতিটি অংশের ছবিসহ কার্ড
+    const T = window.AHThobe, fab0 = fabricOf(cu.fabric) || CUSTOM.fabrics[0];
+    const looks = T.looksFrom(CUSTOM.groups.map(g => ({ key: g.key, options: g.options.map(o => ({ ...o, en: o.name.en })) })), cu.opts);
+    const presetCard = (k, title, note, lk) => `<button type="button" class="preset" data-preset="${k}" aria-pressed="${['collar', 'front', 'cuff'].every(x => looks[x] === lk[x])}">
+      <span class="pr-img">${T.draw({ hex: fab0.hex, image: fab0.image, ...looks, ...lk, crop: undefined, title })}</span><span class="pr-txt"><strong>${title}</strong><small>${note}</small></span></button>`;
+    const groups = `<p class="opt-label">${t('presetsTitle')}</p><div class="presets">
+        ${presetCard('saudi', t('presetSaudi'), t('presetSaudiNote'), PRESETS.saudi)}${presetCard('band', t('presetBand'), t('presetBandNote'), PRESETS.band)}</div>
+      <p class="muted small preset-or">${t('presetOr')}</p>`
+      + CUSTOM.groups.map(g => {
+        const kind = T.KIND[T.lookOf(g.key, { ...g.options[0], en: g.options[0].name.en })];
+        return `<fieldset class="cu-group"><legend>${esc(L(g.name))}</legend>${kind === 'pocket' ? `<p class="muted small">${t('pocketNote')}</p>` : ''}<div class="${kind ? 'look-opts' : 'chip-opts'}">${g.options.map((o, i) => {
+          const lk = T.lookOf(g.key, { ...o, en: o.name.en }), k2 = T.KIND[lk];
+          return k2 ? `<label class="look-opt"><input type="radio" name="opt-${esc(g.key)}" value="${i}" ${cu.opts[g.key] === i ? 'checked' : ''}>
+              <span class="lo-img">${T.draw({ hex: fab0.hex, image: fab0.image, ...looks, [k2]: lk, crop: k2 })}</span>
+              <span class="lo-txt">${esc(L(o.name))}${o.add ? `<small>+${money(o.add)}</small>` : ''}</span></label>`
+            : `<label class="chip-opt"><input type="radio" name="opt-${esc(g.key)}" value="${i}" ${cu.opts[g.key] === i ? 'checked' : ''}><span>${esc(L(o.name))}${o.add ? ` <small>+${money(o.add)}</small>` : ''}</span></label>`;
+        }).join('')}</div></fieldset>`;
+      }).join('');
     const M = STR[lang].meas, H = STR[lang].measHelp;
     const measInputs = MEAS_FIELDS.map(([k, req]) => `<label class="meas ${req ? 'req' : ''}"><span class="meas-l">${M[k]}${req ? '' : ` <small>(${t('optional')})</small>`}</span>
       <span class="meas-in"><input name="m-${k}" ${k === 'height' ? 'type="text"' : 'type="number" step="0.25" inputmode="decimal"'} value="${esc(cu.meas[k] || '')}">${k === 'height' ? '' : `<em>${t('inches')}</em>`}</span>
@@ -499,7 +517,7 @@
         <label class="opt"><input type="radio" name="fit" value="measure" ${cu.fit === 'measure' ? 'checked' : ''}><span>${t('fitMeasure')}<small>${t('fitMeasureNote')}</small></span></label>
       </div>
       <div id="cuStd" ${cu.fit === 'standard' ? '' : 'hidden'}>
-        <div class="opt-row"><p class="opt-label">${t('size')}</p><a class="link" href="#/page/size-guide">${t('sizeGuide')}</a></div>
+        <div class="opt-row"><p class="opt-label">${t('size')} <span class="fs-hint" data-fs-hint hidden></span></p><span class="size-links"><button type="button" class="link link-btn fs-btn" data-findsize>${t('findSize')}</button><a class="link" href="#/page/size-guide">${t('sizeGuide')}</a></span></div>
         <div class="sizes">${CUSTOM.sizes.map(z => `<button type="button" class="size" data-csize="${esc(z)}" aria-pressed="${cu.size === z}">${esc(z)}</button>`).join('')}</div>
       </div>
       <div id="cuMeas" ${cu.fit === 'measure' ? '' : 'hidden'}>
@@ -547,7 +565,20 @@
     if (!form) return;
     const draw = () => {
       const f = fabricOf(cu.fabric), pr = customPrice(cu);
-      $('#cuArt').innerHTML = `<div class="ph">${art({ shape: 'thobe', color: { hex: f.hex } })}</div>${f.image ? `<span class="cu-swatch"><img src="${esc(f.image)}" alt=""></span>` : ''}`;
+      const T = window.AHThobe;
+      const looks = T.looksFrom(CUSTOM.groups.map(g => ({ key: g.key, options: g.options.map(o => ({ ...o, en: o.name.en })) })), cu.opts);
+      $('#cuArt').innerHTML = `<div class="cu-thobe">${T.draw({ hex: f.hex, image: f.image, ...looks, title: t('customItem') })}</div>${f.image ? `<span class="cu-swatch"><img src="${esc(f.image)}" alt=""></span>` : ''}`;
+      // অংশের ছোট ছবিগুলোও বাছাই করা কাপড়ে
+      form.querySelectorAll('.look-opt').forEach(lb => {
+        const inp = lb.querySelector('input'), g = CUSTOM.groups.find(x => 'opt-' + x.key === inp.name), o = g.options[Number(inp.value)];
+        const lk = T.lookOf(g.key, { ...o, en: o.name.en }), k2 = T.KIND[lk];
+        lb.querySelector('.lo-img').innerHTML = T.draw({ hex: f.hex, image: f.image, ...looks, [k2]: lk, crop: k2 });
+      });
+      form.querySelectorAll('[data-preset]').forEach(b => {
+        const lk = PRESETS[b.dataset.preset];
+        b.setAttribute('aria-pressed', ['collar', 'front', 'cuff'].every(x => looks[x] === lk[x]));
+        b.querySelector('.pr-img').innerHTML = T.draw({ hex: f.hex, image: f.image, ...looks, ...lk });
+      });
       const sizeTxt = cu.fit === 'standard' ? (cu.size ? t('sizeIs', esc(cu.size)) : '—') : t('madeToMeasure');
       $('#cuSum').innerHTML = `<h3>${t('customItem')}</h3>
         <dl><dt>${t('fabricL')}</dt><dd>${esc(L(f.name))}${L(f.color) ? ', ' + esc(L(f.color)) : ''}</dd>
@@ -587,6 +618,15 @@
       if (n === 'note') cu.note = e.target.value;
     });
     form.addEventListener('click', e => {
+      const pr = e.target.closest('[data-preset]');
+      if (pr) {
+        const want = PRESETS[pr.dataset.preset], T = window.AHThobe;
+        CUSTOM.groups.forEach(g => {
+          const idx = g.options.findIndex(o => { const lk = T.lookOf(g.key, { ...o, en: o.name.en }); return T.KIND[lk] && want[T.KIND[lk]] === lk; });
+          if (idx >= 0) { cu.opts[g.key] = idx; const r = form.querySelector(`input[name="opt-${CSS.escape(g.key)}"][value="${idx}"]`); if (r) r.checked = true; }
+        });
+        draw(); return;
+      }
       const fz = e.target.closest('[data-fzoom]');
       if (fz) { e.preventDefault(); openLightbox(CUSTOM.fabrics.filter(f => f.image).map(f => ({ src: f.image, caption: L(f.name) + (L(f.color) ? ', ' + L(f.color) : '') })), CUSTOM.fabrics.filter(f => f.image).indexOf(CUSTOM.fabrics[Number(fz.dataset.fzoom)])); return; }
       const fm = e.target.closest('[data-fam]');
@@ -820,6 +860,10 @@
   });
   document.addEventListener('click', e => {
     if (!e.target.closest('.fdrop')) document.querySelectorAll('.fdrop[open]').forEach(d => { d.open = false; });
+    const fsb = e.target.closest('[data-findsize]');
+    if (fsb && !fsb.closest('#quickDialog')) { e.preventDefault(); const pid = (location.hash.match(/^#\/p\/([^/]+)/) || [])[1]; openSizeFinder(pid ? byId(decodeURIComponent(pid)) : null); return; }
+    const ins = e.target.closest('[data-install]');
+    if (ins) { e.preventDefault(); doInstall(); return; }
     const qa = e.target.closest('[data-quick]');
     if (qa) { e.preventDefault(); openQuick(qa.dataset.quick); return; }
     const ct = e.target.closest('[data-colors]');
@@ -1059,6 +1103,84 @@
     }, 1200);
   }
 
+  // ---------- "আমার সাইজ কত?": উচ্চতা আর ওজন থেকে সাইজ চার্ট মিলিয়ে ----------
+  const FIT_KEY = 'alhadaf_fit';
+  const savedFit = () => { try { return JSON.parse(store.get(FIT_KEY) || 'null'); } catch (e) { return null; } };
+  function recommendSize(ft, inch, kg, fit) {
+    const hIn = ft * 12 + inch, m = hIn * 0.0254, bmi = kg / (m * m);
+    const lens = SIZE_CHART.map(r => parseFloat(r[1]));
+    const want = hIn * 0.835;
+    let idx = 0; lens.forEach((l, i) => { if (Math.abs(l - want) < Math.abs(lens[idx] - want)) idx = i; });
+    const base = idx;
+    let bump = bmi >= 31 ? 2 : bmi >= 27 ? 1 : 0;
+    if (fit === 'loose' && bump === 0) bump = 1;
+    idx = Math.min(lens.length - 1, idx + bump);
+    // লম্বার দিক থেকে মাঝামাঝি হলে বিকল্প সাইজ
+    const alt = !bump && want > lens[base] + 0.6 && base + 1 < lens.length ? base + 1 : null;
+    return { label: SIZE_CHART[idx][0], length: lens[idx], chest: parseFloat(SIZE_CHART[idx][2]), roomy: bmi >= 27, alt: alt != null ? SIZE_CHART[alt][0] : null };
+  }
+  function openSizeFinder(p) {
+    const sv = savedFit() || {};
+    const dlg = $('#sizeDialog');
+    const draw = res => {
+      const inStock = res && p ? p.sizes.find(z => z.label === res.label && z.stock > 0) : null;
+      $('#sizeBody').innerHTML = `<button class="icon-btn dlg-x" data-close aria-label="${t('close')}">×</button>
+        <form class="fs" id="fsForm" novalidate>
+          <h2>${t('fsTitle')}</h2><p class="muted">${t('fsIntro')}</p>
+          <div class="fs-row"><span class="fs-l">${t('fsHeight')}</span>
+            <label class="fs-in"><input name="ft" type="number" inputmode="numeric" min="4" max="7" value="${esc(sv.ft || '')}" placeholder="5"><em>${t('fsFeet')}</em></label>
+            <label class="fs-in"><input name="inch" type="number" inputmode="numeric" min="0" max="11" value="${sv.inch == null ? '' : esc(sv.inch)}" placeholder="7"><em>${t('fsInch')}</em></label></div>
+          <div class="fs-row"><span class="fs-l">${t('fsWeight')}</span><label class="fs-in wide"><input name="kg" type="number" inputmode="numeric" min="25" max="200" value="${esc(sv.kg || '')}" placeholder="68"><em>kg</em></label></div>
+          <fieldset class="cu-group"><legend>${t('fsFit')}</legend><div class="chip-opts">${['regular', 'loose'].map(k => `<label class="chip-opt"><input type="radio" name="fit" value="${k}" ${(sv.fit || 'regular') === k ? 'checked' : ''}><span>${STR[lang].fits[k]}</span></label>`).join('')}</div></fieldset>
+          <button class="btn btn-dark btn-block" type="submit">${t('fsGo')}</button>
+          <p class="error" id="fsErr" hidden></p>
+          ${res ? `<div class="fs-res"><p class="fs-big">${t('fsResult', `<strong>${esc(res.label)}</strong>`)}</p><p class="muted">${t('fsLength', res.length, res.chest)}</p>
+            ${res.roomy ? `<p class="small">${t('fsRoomy')}</p>` : ''}${res.alt ? `<p class="small">${t('fsBetween', esc(res.alt))}</p>` : ''}
+            ${p ? (inStock ? `<button type="button" class="btn btn-dark" id="fsUse">${t('fsUse')}</button>` : `<p class="small error">${t('fsOut')}</p>`) : ''}
+            ${CUSTOM ? `<a class="link" href="#/custom" data-close>${t('fsCustom')}</a>` : ''}</div>` : ''}
+        </form>`;
+      const f = $('#fsForm');
+      f.addEventListener('submit', e => {
+        e.preventDefault();
+        const ft = Number(f.ft.value), inch = Number(f.inch.value || 0), kg = Number(f.kg.value);
+        if (!(ft >= 4 && ft <= 7) || !(kg >= 25 && kg <= 200) || inch < 0 || inch > 11) { $('#fsErr').textContent = t('fsErr'); $('#fsErr').hidden = false; return; }
+        const r = recommendSize(ft, inch, kg, f.fit.value);
+        Object.assign(sv, { ft, inch, kg, fit: f.fit.value, size: r.label });
+        store.set(FIT_KEY, JSON.stringify(sv));
+        draw(r); markRecommended();
+      });
+      const use = $('#fsUse');
+      if (use) use.addEventListener('click', () => { const b = document.querySelector(`#view .size[data-size="${inStock.id}"]`); if (b) b.click(); dlg.close(); });
+    };
+    draw(sv.size ? recommendSize(sv.ft, sv.inch, sv.kg, sv.fit) : null);
+    dlg.showModal();
+  }
+  // আগে সাইজ বের করে থাকলে পণ্যের পেজে সেই সাইজে চিহ্ন
+  function markRecommended() {
+    const sv = savedFit(); if (!sv || !sv.size) return;
+    document.querySelectorAll('#view .sizes .size, #quickBody .sizes .size').forEach(b => { b.classList.toggle('rec', b.textContent.trim() === sv.size); });
+    document.querySelectorAll('[data-fs-hint]').forEach(el => { el.textContent = t('fsYour', sv.size); el.hidden = false; });
+  }
+
+  // ---------- অ্যাপ ইনস্টল (PWA) ----------
+  let installEvt = null;
+  const standalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; showInstall(); });
+  window.addEventListener('appinstalled', () => { installEvt = null; toast(t('installDone')); document.querySelectorAll('[data-install]').forEach(b => { b.hidden = true; }); $('#installBar').hidden = true; });
+  function showInstall() {
+    if (standalone() || (!installEvt && !isIos)) return;
+    document.querySelectorAll('[data-install]').forEach(b => { b.hidden = false; });
+    // দ্বিতীয় বা পরের ভিজিটে নিচে ছোট একটা বার, একবার বন্ধ করলে আর দেখায় না
+    const visits = Number(store.get('alhadaf_visits') || 0);
+    if (visits >= 2 && !store.get('alhadaf_install_no')) $('#installBar').hidden = false;
+  }
+  async function doInstall() {
+    if (installEvt) { installEvt.prompt(); const r = await installEvt.userChoice; if (r.outcome !== 'accepted') store.set('alhadaf_install_no', '1'); installEvt = null; $('#installBar').hidden = true; }
+    else if (isIos) toast(t('installIos'));
+  }
+  store.set('alhadaf_visits', String(Number(store.get('alhadaf_visits') || 0) + 1));
   // ---------- router ----------
   function route() {
     if (!loaded) { $('#view').innerHTML = `<div class="wrap page" aria-busy="true" aria-label="${t('loading')}"><div class="sk sk-title"></div><div class="grid">${'<div><div class="sk sk-img"></div><div class="sk sk-line"></div><div class="sk sk-line short"></div></div>'.repeat(8)}</div></div>`; return; }
@@ -1086,6 +1208,7 @@
     const titleEl = view.querySelector('h1');
     document.title = (parts[0] && titleEl ? titleEl.textContent + ' | ' : '') + 'Al Hadaf';
     view.classList.remove('view-in'); void view.offsetWidth; view.classList.add('view-in');
+    markRecommended();
     reveal(view);
     px('PageView');
   }
@@ -1238,6 +1361,7 @@
       <div class="side-head"><span>${t('menu')}</span><button class="icon-btn" data-close aria-label="${t('close')}">×</button></div>
       <nav class="menu-list">${CATEGORIES.map(c => `<a href="#/c/${c.id}" data-close>${esc(L(c.name))}</a>`).join('')}${extraLinks().map(([k, l]) => `<a href="#/${k}" data-close>${esc(l)}</a>`).join('')}</nav>
       <nav class="menu-list small">${FEATURES.otp ? `<a href="#/account" data-close>${t('account')}</a>` : ''}<a href="#/wishlist" data-close>${t('wishlist')}</a><a href="#/track" data-close>${t('trackNav')}</a>${['size-guide', 'exchange', 'contact'].map(s => `<a href="#/page/${s}" data-close>${STR[lang].pages[s]}</a>`).join('')}</nav>
+      <button class="menu-install" data-install hidden>${t('installApp')}</button>
       ${socialRow('menu-socials')}
       <button class="lang-btn menu-lang" data-lang>${t('langSwitch')}</button>`;
   }
@@ -1256,6 +1380,7 @@
         ${SHOP.whatsapp ? `<li><a href="${waLink()}" target="_blank" rel="noopener">${icon('whatsapp', 16)}WhatsApp</a></li>` : ''}
         ${SHOP.email ? `<li><a href="mailto:${esc(SHOP.email)}">${icon('email', 16)}${esc(SHOP.email)}</a></li>` : ''}
         <li><a href="#/track">${t('trackNav')}</a></li>
+        <li><a href="#" data-install hidden>${t('installShort')}</a></li>
         ${CUSTOM ? `<li><a href="#/custom">${t('customNav')}</a></li>` : ''}</ul></div>
     </div>
     <div class="wrap foot-bottom">
@@ -1532,6 +1657,9 @@
     $('#accountLink').setAttribute('aria-label', t('account'));
     $('#accountLink').hidden = !FEATURES.otp;
     renderWishCount();
+    $('#installBar').innerHTML = `<img src="/icon-192.png" alt="" width="40" height="40"><span>${t('installApp')}</span><button class="btn btn-dark" data-install>${t('installShort')}</button><button class="icon-btn" id="installNo" aria-label="${t('close')}">×</button>`;
+    $('#installNo').onclick = () => { store.set('alhadaf_install_no', '1'); $('#installBar').hidden = true; };
+    showInstall();
     if (!$('#chatPanel').hidden) renderChat();
     renderFooter(); renderCartCount();
   }

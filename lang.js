@@ -336,3 +336,29 @@ Object.assign(STR.bn, {
   arrives: (d1, d2) => `আজ অর্ডার করলে পাবেন ${d1}${d2 ? ' থেকে ' + d2 : ''}`, insideDhaka: 'ঢাকার ভেতরে', outsideDhaka: 'ঢাকার বাইরে',
   backTop: 'উপরে যান'
 });
+
+// ===== v9: কাস্টম স্টাইল, সাইজ হেল্পার, অ্যাপ ইনস্টল =====
+Object.assign(STR.en, {
+  presetsTitle: 'Start from a style', presetSaudi: 'Classic Saudi', presetSaudiNote: 'Shirt collar, hidden buttons, cuff sleeves',
+  presetBand: 'Band collar', presetBandNote: 'No collar, gold buttons on show, cuff sleeves', presetOr: 'or choose each part below',
+  pocketNote: 'The chest pocket is always on your left side.',
+  findSize: 'Find my size', fsTitle: 'Find your size', fsIntro: 'Tell us your height and weight. We match it with our size chart.',
+  fsHeight: 'Height', fsFeet: 'feet', fsInch: 'inches', fsWeight: 'Weight (kg)', fsFit: 'How do you like it?', fsGo: 'Show my size',
+  fsResult: s => `Your size is ${s}`, fsLength: (l, c) => `Thobe length about ${l}″, chest ${c}″.`,
+  fsRoomy: 'You are broader than average for your height, so we went one size up for comfort at the chest.',
+  fsBetween: s => `If you like it a little longer, ${s} also works.`, fsUse: 'Use this size', fsOut: 'This size is sold out in this colour. Tap “Notify me” on it or try another colour.',
+  fsCustom: 'Between sizes? Get it made to your measurements.', fsErr: 'Enter your height and weight.', fsYour: s => `Your size: ${s}`,
+  installApp: 'Install the Al Hadaf app', installShort: 'Install app', installIos: 'On iPhone: tap the Share button, then “Add to Home Screen”.', installDone: 'Al Hadaf is on your home screen now.'
+});
+Object.assign(STR.bn, {
+  presetsTitle: 'একটি স্টাইল দিয়ে শুরু করুন', presetSaudi: 'ক্লাসিক সৌদি', presetSaudiNote: 'শার্ট কলার, লুকানো বোতাম, কাফ হাতা',
+  presetBand: 'বেল্ট কলার', presetBandNote: 'কলার ছাড়া, সোনালি খোলা বোতাম, কাফ হাতা', presetOr: 'অথবা নিচে প্রতিটি অংশ বেছে নিন',
+  pocketNote: 'বুকের পকেট সবসময় আপনার বাম দিকে থাকবে।',
+  findSize: 'আমার সাইজ কত?', fsTitle: 'আপনার সাইজ খুঁজুন', fsIntro: 'উচ্চতা আর ওজন দিন, আমাদের সাইজ চার্টের সাথে মিলিয়ে দেব।',
+  fsHeight: 'উচ্চতা', fsFeet: 'ফুট', fsInch: 'ইঞ্চি', fsWeight: 'ওজন (কেজি)', fsFit: 'কেমন ফিট পছন্দ?', fsGo: 'সাইজ দেখুন',
+  fsResult: s => `আপনার সাইজ ${s}`, fsLength: (l, c) => `জুব্বার লম্বা প্রায় ${l}″, বুক ${c}″।`,
+  fsRoomy: 'উচ্চতার তুলনায় আপনার গড়ন একটু চওড়া, তাই বুকে আরামের জন্য এক সাইজ বড় দিলাম।',
+  fsBetween: s => `একটু লম্বা পছন্দ হলে ${s}-ও হবে।`, fsUse: 'এই সাইজ নিন', fsOut: 'এই রঙে সাইজটি স্টকে নেই। সাইজে চাপ দিয়ে "জানাবেন" দিন বা অন্য রং দেখুন।',
+  fsCustom: 'দুই সাইজের মাঝামাঝি? নিজের মাপে বানিয়ে নিন।', fsErr: 'উচ্চতা আর ওজন লিখুন।', fsYour: s => `আপনার সাইজ: ${s}`,
+  installApp: 'আল হাদাফ অ্যাপ ইনস্টল করুন', installShort: 'অ্যাপ ইনস্টল', installIos: 'আইফোনে: শেয়ার বাটনে চাপ দিন, তারপর "Add to Home Screen"।', installDone: 'আল হাদাফ এখন আপনার হোম স্ক্রিনে।'
+});

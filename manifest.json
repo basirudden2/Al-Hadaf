@@ -1,0 +1,22 @@
+{
+  "name": "Al Hadaf — Thobes for Jumu’ah, Eid and every day",
+  "short_name": "Al Hadaf",
+  "description": "Ready-made and made-to-measure thobes. Cash on delivery all over Bangladesh.",
+  "start_url": "/?source=app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FFFFFF",
+  "theme_color": "#1A1A1A",
+  "lang": "en",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Thobes", "url": "/#/c/thobe" },
+    { "name": "Custom thobe", "url": "/#/custom" },
+    { "name": "Track order", "url": "/#/track" }
+  ]
+}

@@ -650,3 +650,8 @@ dialog.adlg.wide { width: min(900px, 100% - 24px); }
 .mom { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
 .mom div { background: var(--bg); border-radius: 6px; padding: 10px; } .mom span { display: block; font-size: 12px; color: var(--muted); } .mom b { font-size: 18px; font-weight: 600; display: block; } .mom em { font-style: normal; font-size: 13px; }
 .follow-card { margin-bottom: 16px; border-left: 3px solid var(--orange); }
+.pay-seg { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin: 8px 0 10px; }
+.pay-seg button { border: 0; border-right: 1px solid var(--line); background: var(--card); padding: 9px 4px; font: inherit; font-size: 13px; cursor: pointer; }
+.pay-seg button:last-child { border-right: 0; }
+.pay-seg [aria-pressed="true"] { background: var(--text); color: #fff; }
+.paid-edit { background: #FFF8EE; border: 1px solid #F3DDBC; border-radius: 6px; padding: 12px 14px 4px; margin: 8px 0 12px; }

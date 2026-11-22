@@ -2296,11 +2296,38 @@ async function editOrder(req, env, id, user) {
   ops.push(D.prepare(`UPDATE orders SET name=?, phone=?, address=?, area=?, note=?, items=?, subtotal=?, delivery=?, discount=?, total=?, channel=?, sold_by=?, created_at=? WHERE id=?`)
     .bind(str(b.name ?? o.name, 100), phone, str(b.address ?? o.address, 500), b.area === 'outside' ? 'outside' : b.area === 'inside' ? 'inside' : o.area, str(b.note ?? o.note, 500),
       JSON.stringify(newItems), subtotal, delivery, discount, total, CHANNELS[b.channel] ? b.channel : (o.channel || 'website'), str(b.sold_by ?? o.sold_by, 60), created, id));
+  // হাতে হাতে বিক্রিতে "আসলে কত টাকা পেয়েছি" বদলানো: কমালে টাকার এন্ট্রি কমে/মুছে যায় (বাকি দেখায়), বাড়ালে নতুন জমা হয়
+  let paidNote = '';
+  if (b.paid_amount != null && b.paid_amount !== '' && (o.delivery_mode === 'handover' || o.channel !== 'website')) {
+    const newPaid = Math.min(total, Math.max(0, int(b.paid_amount))), oldPaid = o.paid_amount || 0;
+    if (newPaid < oldPaid) {
+      let cut = oldPaid - newPaid;
+      const ents = (await D.prepare("SELECT id, amount FROM acc_entries WHERE source = 'order' AND ref = ? ORDER BY id DESC").bind(o.order_no).all()).results;
+      for (const e of ents) {
+        if (cut <= 0) break;
+        if (e.amount <= cut) { ops.push(D.prepare('DELETE FROM acc_entries WHERE id = ?').bind(e.id)); cut -= e.amount; }
+        else { ops.push(D.prepare('UPDATE acc_entries SET amount = amount - ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(cut, user.name, e.id)); cut = 0; }
+      }
+    } else if (newPaid > oldPaid) {
+      const acc = await D.prepare('SELECT id FROM acc_accounts WHERE id = ?').bind(int(b.pay_account_id)).first() || await D.prepare("SELECT id FROM acc_accounts WHERE kind = 'cash' ORDER BY sort, id LIMIT 1").first();
+      const cat = await D.prepare("SELECT id FROM acc_categories WHERE type = 'in' AND kind = 'revenue' ORDER BY sort, id LIMIT 1").first();
+      ops.push(D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, ref, note, source, created_by) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, 'order', ?)`)
+        .bind(bdNow().toISOString().slice(0, 10), cat ? cat.id : null, newPaid - oldPaid, acc.id, o.name || '', o.order_no, 'Payment received ' + o.order_no, user.name));
+    }
+    if (newPaid !== oldPaid) {
+      // বাকি হিসাবের জন্য এটাকে হাতে হাতে বিক্রি ধরা হয়
+      ops.push(D.prepare("UPDATE orders SET paid_amount = ?, delivery_mode = 'handover' WHERE id = ?").bind(newPaid, id));
+      // কুরিয়ারের পাওনা হিসেবে আগে বসে থাকলে সেটা সরানো, নইলে দুবার গোনা হবে
+      if (o.delivery_mode !== 'handover') ops.push(D.prepare("DELETE FROM acc_entries WHERE order_no = ? AND source = 'order'").bind(o.order_no));
+      paidNote = `; money received ${oldPaid} → ${newPaid}${total > newPaid ? ', due ' + (total - newPaid) : ''}`;
+    }
+  }
   // ডেলিভারির পর কুরিয়ারের পাওনার এন্ট্রিও নতুন মোট অনুযায়ী
   ops.push(D.prepare("UPDATE acc_entries SET amount = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE order_no = ? AND source = 'order'").bind(Math.max(0, total - (o.paid_amount || 0)), user.name, o.order_no));
   await D.batch(ops);
-  await audit(env, user, 'EDIT', 'orders', o.order_no, `Before: ${old.map(l => `${l.name} ${l.size} ×${l.qty} @${l.price}`).join(', ')}; total ${o.total}  →  After: ${newItems.map(l => `${l.name} ${l.size} ×${l.qty} @${l.price}`).join(', ')}; total ${total}`);
-  return json({ ok: true, total, refund: Math.max(0, (o.paid_amount || 0) - total) });
+  await audit(env, user, 'EDIT', 'orders', o.order_no, `Before: ${old.map(l => `${l.name} ${l.size} ×${l.qty} @${l.price}`).join(', ')}; total ${o.total}  →  After: ${newItems.map(l => `${l.name} ${l.size} ×${l.qty} @${l.price}`).join(', ')}; total ${total}${paidNote}`);
+  const fresh = await D.prepare('SELECT paid_amount FROM orders WHERE id = ?').bind(id).first();
+  return json({ ok: true, total, due: Math.max(0, total - (fresh.paid_amount || 0)), refund: Math.max(0, (fresh.paid_amount || 0) - total) });
 }
 
 async function getGoals(env) {

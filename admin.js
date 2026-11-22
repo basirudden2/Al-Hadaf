@@ -2189,6 +2189,7 @@
           <p class="row"><span>Subtotal</span><b id="sSub">৳ 0</b></p>
           <label class="field inline"><span>Discount</span><input type="number" name="discount" min="0" value="0"></label>
           <p class="row big"><span>Total</span><b id="sTot">৳ 0</b></p>
+          <div class="pay-seg" role="group" aria-label="Payment">${[['full', 'Paid in full'], ['part', 'Part paid'], ['none', 'Not paid (due)']].map(([k, l], i) => `<button type="button" data-ps="${k}" aria-pressed="${i === 0}">${l}</button>`).join('')}</div>
           <div id="pays"></div>
           <button type="button" class="text-btn" id="addPay">+ Split payment (cash + bKash…)</button>
           <p class="row"><span>Due (baki)</span><b id="sDue">৳ 0</b></p>
@@ -2237,6 +2238,16 @@
     $('#pays').oninput = e => { const el = e.target, i = el.dataset.p; if (i == null) return; st.payments[i][el.dataset.k] = el.value; if (el.dataset.k === 'amount') st.payTouched = true; sync(); };
     $('#pays').onchange = $('#pays').oninput;
     $('#pays').onclick = e => { const b = e.target.closest('[data-prm]'); if (b) { st.payments.splice(Number(b.dataset.prm), 1); drawPays(); sync(); } };
+    $('#saleF').querySelector('.pay-seg').onclick = e => {
+      const b = e.target.closest('[data-ps]'); if (!b) return;
+      $('#saleF').querySelectorAll('[data-ps]').forEach(x => x.setAttribute('aria-pressed', x === b));
+      const k = b.dataset.ps, t = tot();
+      if (k === 'full') { st.payTouched = false; st.payments = [st.payments[0]]; st.payments[0].amount = t.total || ''; }
+      if (k === 'part') { st.payTouched = true; st.payments[0].amount = ''; }
+      if (k === 'none') { st.payTouched = true; st.payments = [{ ...st.payments[0], amount: 0 }]; }
+      $('#pays').hidden = k === 'none'; $('#addPay').hidden = k === 'none';
+      drawPays(); sync(); if (k === 'part') { const i = $('#pays input'); if (i) i.focus(); }
+    };
     $('#addPay').onclick = () => { st.payTouched = true; st.payments.push({ account_id: (SM.accounts.find(a => a.kind === 'bkash') || SM.accounts[0]).id, amount: '' }); drawPays(); };
     f.discount.oninput = sync; f.delivery.oninput = sync;
     f.delivery_mode.onchange = () => { $('#addrBox').hidden = f.delivery_mode.value !== 'courier'; sync(); };
@@ -2268,7 +2279,8 @@
   }
 
   // ---------- অর্ডার এডিট (সুপার/অ্যাডমিন) ----------
-  function openOrderEdit(o, done) {
+  async function openOrderEdit(o, done) {
+    if (!SM && o.channel && o.channel !== 'website') { try { SM = await api('sales/meta'); } catch (e) { /* cash fallback */ } }
     let dlg = $('#oeDlg'); if (!dlg) { dlg = document.createElement('dialog'); dlg.className = 'adlg wide'; dlg.id = 'oeDlg'; $('#main').appendChild(dlg); }
     const items = o.items.map(l => ({ ...l }));
     dlg.innerHTML = `<form class="adlg-body" id="oeF"><div class="adlg-head"><div><h2>Edit ${esc(o.order_no)}</h2><p class="muted small">Every change is written in the activity log with the old values.</p></div><button type="button" class="icon" data-x>×</button></div>
@@ -2283,11 +2295,17 @@
       <p class="muted small">Set quantity to 0 to remove an item. Stock changes by the difference.</p>
       <div class="g3"><label class="field"><span>Delivery charge</span><input type="number" min="0" name="delivery" value="${o.delivery}"></label><label class="field"><span>Discount</span><input type="number" min="0" name="discount" value="${o.discount || 0}"></label>
         <label class="field"><span>Note</span><input name="note" value="${esc(o.note || '')}"></label></div>
+      ${o.channel && o.channel !== 'website' ? `<div class="paid-edit"><div class="g3">
+        <label class="field"><span>Money received so far <small>total ${money(o.total)}</small></span><input type="number" min="0" name="paid_amount" value="${o.paid_amount || 0}"></label>
+        <label class="field"><span>If more was received, it came into</span><select name="pay_account_id">${(SM ? SM.accounts : []).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('') || '<option value="">Cash</option>'}</select></label>
+        <div class="checks"><button type="button" class="btn ghost sm" id="notPaid">Not paid yet (all due)</button></div></div>
+        <p class="muted small">Lower it if the customer has not paid. The money entry in Accounts goes down and the rest shows as due. Collect it later with “Collect due”.</p></div>` : ''}
       <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn primary">Save changes</button></div></form>`;
     dlg.showModal(); dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
     $('#oeF').oninput = e => { const i = e.target.dataset.i; if (i != null) items[i][e.target.dataset.k] = e.target.dataset.k === 'name' ? e.target.value : Number(e.target.value); };
+    const np = $('#notPaid'); if (np) np.onclick = () => { $('#oeF').paid_amount.value = 0; };
     $('#oeF').onsubmit = async e => { e.preventDefault(); const body = { ...Object.fromEntries(new FormData(e.target)), items };
-      try { const r = await api(`orders/${o.id}/edit`, { method: 'PUT', body }); toast('Order updated · total ' + money(r.total) + (r.refund ? ` · customer paid ${money(r.refund)} more, give it back` : '')); dlg.close(); done && done(); } catch (err) { fail(err); } };
+      try { const r = await api(`orders/${o.id}/edit`, { method: 'PUT', body }); toast('Order updated · total ' + money(r.total) + (r.due ? ` · due ${money(r.due)}` : '') + (r.refund ? ` · customer paid ${money(r.refund)} more, give it back` : '')); dlg.close(); done && done(); } catch (err) { fail(err); } };
   }
 
   // ---------- start ----------

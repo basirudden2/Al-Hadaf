@@ -1306,40 +1306,62 @@
 
   // ================= GALLERY =================
   async function viewGallery() {
-    const list = await api('gallery');
-    $('#main').innerHTML = `
-      <div class="page-head"><div><h1>Gallery <span class="muted">${list.length}</span></h1><p class="muted">Customer photos, Eid looks, the workshop. They show on the home page and on the Gallery page.</p></div>
+    const [list, opts, prods] = await Promise.all([api('gallery'), api('gallery-opts'), api('products').catch(() => [])]);
+    const albums = [...new Set(list.map(g => g.album).filter(Boolean))];
+    const spotsOf = g => { try { return JSON.parse(g.spots || '[]'); } catch (e) { return []; } };
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Gallery <span class="muted">${list.length}</span></h1><p class="muted">Your lookbook. Put photos in albums, pick featured ones for the big slider, and tag the thobes so customers can buy from the photo.</p></div>
         <label class="upload"><input type="file" id="galUp" accept="image/*" multiple hidden><span class="btn primary">Upload photos</span></label></div>
+      <section class="card gal-opts"><label class="check"><input type="checkbox" id="optProducts" ${opts.products ? 'checked' : ''}> Also show one photo of each product design in the gallery</label>
+        <span class="muted small">Upload into album: <input id="upAlbum" list="albumList" placeholder="e.g. Eid 2026" class="inline-in"></span></section>
+      <datalist id="albumList">${['Eid 2026', 'Customer photos', 'Photoshoot', 'New fabrics', ...albums].filter((v, i, a) => a.indexOf(v) === i).map(a => `<option value="${esc(a)}">`).join('')}</datalist>
+      <datalist id="codes">${prods.map(p => `<option value="${esc(p.code)}">${esc(p.name_en)} · ${esc(p.color_en || '')}</option>`).join('')}</datalist>
       <p class="muted small" id="galStatus"></p>
-      ${list.length ? `<div class="gal-grid">${list.map(g => `<form class="gal-card" data-id="${g.id}">
-        <div class="gal-img"><img src="/img/${esc(g.image)}" alt="" loading="lazy"></div>
+      ${list.length ? `<div class="gal-grid">${list.map(g => `<form class="gal-card ${g.featured ? 'is-feat' : ''}" data-id="${g.id}">
+        <div class="gal-img"><img src="/img/${esc(g.image)}" alt="" loading="lazy">${g.featured ? '<b class="feat-tag">★ Featured</b>' : ''}${spotsOf(g).length ? `<b class="spot-tag">${spotsOf(g).length} tagged</b>` : ''}</div>
         <input name="caption_en" value="${esc(g.caption_en)}" placeholder="Caption (English)" aria-label="Caption English">
         <input name="caption_bn" value="${esc(g.caption_bn)}" placeholder="ক্যাপশন (বাংলা)" aria-label="Caption Bangla">
-        <div class="gal-row"><input name="product_code" value="${esc(g.product_code)}" placeholder="Product code" aria-label="Link to product code" list="codes">
-          <input name="sort" type="number" value="${g.sort}" aria-label="Order" title="Display order, lower shows first" class="num"></div>
-        <div class="gal-row"><button class="btn ghost sm danger-t" type="button" data-del>Delete</button><button class="btn primary sm" type="submit">Save</button></div>
-      </form>`).join('')}</div>` : '<p class="empty">No photos yet. Upload a few to start the gallery. Customers wearing your thobes work best.</p>'}
-      <datalist id="codes"></datalist>`;
-    api('products').then(ps => { $('#codes').innerHTML = ps.map(p => `<option value="${esc(p.code)}">${esc(p.name_en)}</option>`).join(''); }).catch(() => {});
+        <div class="gal-row"><input name="album" value="${esc(g.album || '')}" placeholder="Album" list="albumList" aria-label="Album"><input name="sort" type="number" value="${g.sort}" aria-label="Order" title="Lower shows first" class="num"></div>
+        <label class="check sm"><input type="checkbox" name="featured" ${g.featured ? 'checked' : ''}> Featured (big slider at the top)</label>
+        <div class="gal-row"><button class="btn ghost sm" type="button" data-tag>Tag thobes</button><span class="spacer"></span><button class="btn ghost sm danger-t" type="button" data-del>Delete</button><button class="btn primary sm" type="submit">Save</button></div>
+      </form>`).join('')}</div>` : '<p class="empty">No photos yet. Upload customer photos, Eid shoots and close-ups. They look best in portrait (taller than wide).</p>'}
+      <dialog class="adlg wide" id="tagDlg"></dialog></div>`;
+    $('#optProducts').onchange = async e => { try { await api('gallery-opts', { method: 'PUT', body: { products: e.target.checked } }); toast('Saved'); } catch (err) { fail(err); } };
     $('#galUp').addEventListener('change', async e => {
       const files = [...e.target.files]; e.target.value = '';
+      const album = $('#upAlbum').value.trim();
       for (let i = 0; i < files.length; i++) {
         $('#galStatus').textContent = `Uploading photo ${i + 1} of ${files.length}…`;
-        try { const key = await uploadFile(files[i]); await api('gallery', { method: 'POST', body: { image: key, sort: 0 } }); } catch (err) { fail(err); }
+        try { const key = await uploadFile(files[i]); await api('gallery', { method: 'POST', body: { image: key, sort: 0, album } }); } catch (err) { fail(err); }
       }
       toast(files.length > 1 ? 'Photos added' : 'Photo added'); viewGallery().catch(fail);
     });
+    const body = (fm, g) => ({ ...Object.fromEntries(new FormData(fm)), featured: fm.featured.checked, spots: g._spots || spotsOf(g) });
     $('#main').querySelectorAll('.gal-card').forEach(fm => {
-      fm.addEventListener('submit', async e => {
-        e.preventDefault();
-        try { await api('gallery/' + fm.dataset.id, { method: 'PUT', body: Object.fromEntries(new FormData(fm)) }); toast('Photo saved'); } catch (err) { fail(err); }
-      });
-      fm.querySelector('[data-del]').addEventListener('click', async () => {
-        if (!confirm('Delete this photo from the gallery?')) return;
-        try { await api('gallery/' + fm.dataset.id, { method: 'DELETE' }); toast('Photo deleted'); viewGallery().catch(fail); } catch (err) { fail(err); }
-      });
+      const g = list.find(x => String(x.id) === fm.dataset.id);
+      fm.addEventListener('submit', async e => { e.preventDefault(); try { await api('gallery/' + g.id, { method: 'PUT', body: body(fm, g) }); toast('Photo saved'); viewGallery().catch(fail); } catch (err) { fail(err); } });
+      fm.querySelector('[data-del]').addEventListener('click', async () => { if (!confirm('Delete this photo from the gallery?')) return; try { await api('gallery/' + g.id, { method: 'DELETE' }); toast('Photo deleted'); viewGallery().catch(fail); } catch (err) { fail(err); } });
+      fm.querySelector('[data-tag]').addEventListener('click', () => tagEditor(g, fm));
     });
+    // ছবিতে চাপ দিয়ে জুব্বা ট্যাগ করা
+    function tagEditor(g, fm) {
+      const dlg = $('#tagDlg'); let spots = (g._spots || spotsOf(g)).map(s => ({ ...s }));
+      const draw = () => {
+        dlg.innerHTML = `<div class="adlg-body"><div class="adlg-head"><div><h2>Tag thobes in this photo</h2><p class="muted small">Tap on the thobe in the photo, then choose which product it is. Customers see a dot there and can buy it.</p></div><button type="button" class="icon" data-x>×</button></div>
+          <div class="tag-grid"><div class="tag-img" id="tagImg"><img src="/img/${esc(g.image)}" alt="">${spots.map((s, i) => `<span class="tdot" style="left:${s.x}%;top:${s.y}%">${i + 1}</span>`).join('')}</div>
+          <div><ol class="tag-list">${spots.map((s, i) => `<li><input data-si="${i}" value="${esc(s.code)}" list="codes" placeholder="Product code"><button type="button" class="icon" data-srm="${i}" aria-label="Remove">×</button></li>`).join('') || '<li class="muted small">No tags yet. Tap the photo.</li>'}</ol>
+          <div class="row-btns"><span class="spacer"></span><button type="button" class="btn ghost" data-x>Cancel</button><button type="button" class="btn primary" id="tagSave">Save tags</button></div></div></div></div>`;
+        dlg.querySelectorAll('[data-x]').forEach(b => b.onclick = () => dlg.close());
+        $('#tagImg').onclick = e => { const r = $('#tagImg img').getBoundingClientRect(); const x = (e.clientX - r.left) / r.width * 100, y = (e.clientY - r.top) / r.height * 100; if (x < 0 || x > 100 || y < 0 || y > 100) return;
+          spots.push({ code: g.product_code || '', x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 }); draw(); const ins = dlg.querySelectorAll('[data-si]'); ins[ins.length - 1].focus(); };
+        dlg.querySelectorAll('[data-si]').forEach(inp => inp.oninput = () => { spots[inp.dataset.si].code = inp.value.trim().toUpperCase(); });
+        dlg.querySelectorAll('[data-srm]').forEach(b => b.onclick = () => { spots.splice(Number(b.dataset.srm), 1); draw(); });
+        $('#tagSave').onclick = async () => { g._spots = spots.filter(s => s.code); try { await api('gallery/' + g.id, { method: 'PUT', body: body(fm, g) }); toast('Tags saved'); dlg.close(); viewGallery().catch(fail); } catch (err) { fail(err); } };
+      };
+      draw(); dlg.showModal();
+    }
   }
+
 
   // ================= SHOP INFO =================
   async function viewSettings() {
@@ -1406,11 +1428,15 @@
         <section class="card"><h2>Courier</h2>
           <p class="muted small">${integ.steadfast ? '<span class="badge st-delivered">Steadfast connected</span> ' : '<span class="badge">Not set up</span> '}With Steadfast connected, each order gets a “Send to Steadfast” button that books the parcel and saves the tracking number. Add <b>STEADFAST_API_KEY</b> and <b>STEADFAST_SECRET_KEY</b> as secrets in Cloudflare (ask Steadfast support for your API keys).</p>
         </section>
+        <section class="card"><h2>Nightly summary on Telegram</h2>
+          <p class="muted small">Every night at 10 pm you get today’s sales by channel, profit, orders to confirm and ship, money due, chats waiting and who to call tomorrow. It needs Telegram to be connected (below).</p>
+          <button type="button" class="btn ghost sm" id="sumTest">Send today’s summary now</button></section>
         <section class="card"><h2>Phone notifications</h2>
           <p class="muted small">Get a Telegram message on your phone for every new order and chat. Create a bot with @BotFather, then add two secrets in Cloudflare (Worker › Settings › Variables and Secrets): <b>TELEGRAM_BOT_TOKEN</b> and <b>TELEGRAM_CHAT_ID</b>. Full steps are in the README.</p>
         </section>
         <div class="save-bar"><span class="spacer"></span><button class="btn primary" type="submit">Save shop info</button></div>
       </form>`;
+    $('#sumTest').onclick = async () => { try { await api('summary', { method: 'POST' }); toast('Summary sent to Telegram'); } catch (err) { fail(err); } };
     $('#sForm').addEventListener('submit', async e => {
       e.preventDefault();
       const body = Object.fromEntries(new FormData(e.target));

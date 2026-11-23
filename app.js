@@ -25,6 +25,7 @@
   let SHOP = { whatsapp: '', phone: '', email: '', bkash: '', facebook: '', instagram: '', messenger: '', youtube: '', tiktok: '', address: { en: '', bn: '' }, deliveryInside: 0, deliveryOutside: 0, announce: { en: '', bn: '' } };
   let CUSTOM = null;
   let GALLERY = [];
+  let GALLERY_OPTS = { products: true };
   let BANNERS = [];
   let FEATURES = { otp: false, bkashPay: false };
   const readList = k => { try { const v = JSON.parse(store.get(k) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } };
@@ -52,6 +53,7 @@
     PRODUCTS = d.products.map(p => ({ ...p, shape: PLACEHOLDER[p.cat] || 'thobe' }));
     CUSTOM = d.custom && d.custom.fabrics.length ? d.custom : null;
     GALLERY = d.gallery || [];
+    GALLERY_OPTS = d.galleryOpts || { products: true };
     BANNERS = d.banners || [];
     FEATURES = d.features || FEATURES;
     loaded = true;
@@ -689,49 +691,79 @@
     draw();
   }
 
-  // ---------- গ্যালারি ----------
-  // হোম পেজে দুই সারি ছবি উল্টো দিকে নিজে নিজে স্লাইড করে; মাউস রাখলে থেমে যায়
-  function marquee() {
-    galCat = 'all';
-    const list = allGallery();
-    if (!list.length) return '';
-    const half = list.length > 7 ? Math.ceil(list.length / 2) : list.length;
-    const rows = list.length > 7 ? [list.slice(0, half), list.slice(half)] : [list];
-    const row = (items, offset, rev) => {
-      let fill = items; while (fill.length < 8) fill = fill.concat(items);
-      const html = fill.map((g, k) => `<button class="mq-item" data-gal="${(offset + (k % items.length))}" tabindex="${k < items.length ? 0 : -1}" aria-label="${esc(g.caption || t('photo'))}"><img src="${esc(g.src)}" alt="" loading="lazy"></button>`).join('');
-      return `<div class="mq-row ${rev ? 'rev' : ''}" style="--dur:${Math.max(30, fill.length * 5)}s"><div class="mq-track">${html}</div><div class="mq-track" aria-hidden="true">${html.replace(/tabindex="0"/g, 'tabindex="-1"')}</div></div>`;
-    };
-    return `<section class="block mq-block" data-reveal>
-      <div class="wrap block-head"><h2 class="block-title">${t('galleryHomeTitle')}</h2><a class="link" href="#/gallery">${t('viewAll')}</a></div>
-      <div class="marquee">${rows.map((r, i) => row(r, i ? half : 0, i === 1)).join('')}</div>
-    </section>`;
-  }
-  function pageGallery() {
-    const all = allGallery();
-    const cats = [['all', t('galleryAll')]].concat(GALLERY.length ? [['_ours', t('galleryOurs')]] : [],
-      CATEGORIES.filter(c => c.id !== 'all' && all.some(g => g.cat === c.id)).map(c => [c.id, L(c.name)]));
-    const list = galleryList();
-    return `<div class="wrap page">
-      <nav class="crumbs"><a href="#/">${t('home')}</a><span>/</span><span>${t('galleryTitle')}</span></nav>
-      <div class="cat-head"><div><h1>${t('galleryTitle')}</h1><p class="muted">${t('galleryIntro')}</p></div></div>
-      ${cats.length > 2 ? `<div class="gal-filter" role="group" aria-label="${t('galleryTitle')}">${cats.map(([k, l]) => `<button class="gf" data-gcat="${esc(k)}" aria-pressed="${galCat === k}">${esc(l)}</button>`).join('')}</div>` : ''}
-      ${list.length ? `<div class="masonry">${list.map((g, i) => `<figure class="m-item" data-reveal style="--d:${(i % 6) * 70}ms">
-        <button class="g-item" data-gal="${i}" aria-label="${esc(g.caption || t('photo') + ' ' + (i + 1))}">${imgTag(g.src, g.caption, true)}</button>
-        ${g.caption ? `<figcaption>${g.href ? `<a href="${g.href}">${esc(g.caption)}</a>` : esc(g.caption)}</figcaption>` : ''}</figure>`).join('')}</div>` : `<p class="muted">${t('galleryEmpty')}</p>`}
-    </div>`;
-  }
-  // গ্যালারি = অ্যাডমিনে আপলোড করা ছবি + সব পণ্যের ছবি (নতুন পণ্য যোগ করলে নিজে থেকেই আসে)
+  // ---------- গ্যালারি (লুকবুক) ----------
+  // অ্যাডমিনের ছবি (অ্যালবাম, ফিচার্ড, ট্যাগ) + চাইলে প্রতিটি ডিজাইনের একটি করে ছবি
   function allGallery() {
-    const own = GALLERY.map(g => ({ src: g.image, caption: L(g.caption), href: g.product && byId(g.product) ? '#/p/' + g.product : '', cat: '_ours' }));
-    const prod = [];
-    PRODUCTS.forEach(p => p.images.forEach((src, i) => prod.push({ src, caption: L(p.name) + (L(p.color) ? ', ' + L(p.color) : ''), href: '#/p/' + p.id, cat: p.cat, first: i === 0 })));
-    // প্রথমে প্রতিটি পণ্যের মূল ছবি, তারপর বাকি ছবি, যাতে স্লাইডে বৈচিত্র্য থাকে
-    return own.concat(prod.filter(x => x.first), prod.filter(x => !x.first));
+    const own = GALLERY.map(g => {
+      const codes = [...new Set([...(g.spots || []).map(s => s.code), g.product].filter(c => c && byId(c)))];
+      return { id: 'g' + g.id, src: g.image, caption: L(g.caption), album: g.album || '', featured: g.featured, spots: (g.spots || []).filter(s => byId(s.code)), codes, href: codes[0] ? '#/p/' + codes[0] : '' };
+    });
+    const prod = GALLERY_OPTS.products ? byDesign(PRODUCTS).filter(p => p.images && p.images[0]).map(p => ({ id: 'p' + p.id, src: p.images[0], caption: L(p.name), album: '_products', featured: false, spots: [], codes: [p.id], href: '#/p/' + p.id })) : [];
+    return own.concat(prod);
   }
   let galCat = 'all';
-  const galleryList = () => allGallery().filter(g => galCat === 'all' || g.cat === galCat);
-  const galleryItems = galleryList;
+  const galleryList = () => allGallery().filter(g => galCat === 'all' || g.album === galCat);
+  const galleryItems = () => galleryList().map(g => ({ src: g.src, caption: g.caption, href: g.href }));
+  // হোম পেজের চলমান সারির জন্য আগের মতো
+  function marquee() { return ''; }
+
+  function pageGallery() {
+    const all = allGallery();
+    const albums = [...new Set(all.map(g => g.album).filter(a => a && a !== '_products'))];
+    const tabs = [['all', t('galAll'), all.length]].concat(albums.map(a => [a, a, all.filter(g => g.album === a).length]), all.some(g => g.album === '_products') ? [['_products', t('galProducts'), all.filter(g => g.album === '_products').length]] : []);
+    if (!tabs.some(x => x[0] === galCat)) galCat = 'all';
+    const list = galleryList();
+    const feat = all.filter(g => g.featured);
+    const hero = feat.length ? feat : [];
+    return `<div class="gpage">
+      ${hero.length ? `<section class="ghero" id="ghero">${hero.map((g, i) => `<button class="gh-slide ${i ? '' : 'on'}" data-gopen="${g.id}" aria-label="${esc(g.caption || t('photo'))}">${imgTag(g.src, g.caption, false, i === 0)}
+          <span class="gh-copy"><small>${esc(g.album || t('galleryTitle'))}</small>${g.caption ? `<b>${esc(g.caption)}</b>` : ''}${g.spots.length || g.codes.length ? `<em>${t('shopLook')} →</em>` : ''}</span></button>`).join('')}
+        ${hero.length > 1 ? `<div class="gh-dots">${hero.map((_, i) => `<i class="${i ? '' : 'on'}"></i>`).join('')}</div>` : ''}</section>` : ''}
+      <div class="wrap">
+        <div class="ghead"><div><h1>${t('galleryTitle')}</h1><p class="muted">${t('galleryIntro')}</p></div><span class="muted">${t('galCount', list.length)}</span></div>
+        ${tabs.length > 2 ? `<div class="gtabs" role="tablist">${tabs.map(([k, l, n]) => `<button role="tab" data-gcat="${esc(k)}" aria-selected="${galCat === k}">${esc(l)} <small>${n}</small></button>`).join('')}</div>` : ''}
+        ${list.length ? `<div class="ggrid">${list.map((g, i) => `<button class="gtile ${i % 9 === 0 && list.length > 4 ? 'big' : ''}" data-gopen="${g.id}" style="--d:${(i % 8) * 50}ms" aria-label="${esc(g.caption || t('photo') + ' ' + (i + 1))}">
+            ${imgTag(g.src, g.caption, true, i < 4)}
+            ${g.spots.length ? `<span class="gt-shop">${t('shopLook')}</span>` : ''}
+            ${g.caption ? `<span class="gt-cap">${esc(g.caption)}</span>` : ''}</button>`).join('')}</div>` : `<p class="muted">${t('galleryEmpty')}</p>`}
+      </div>
+      <dialog class="gviewer" id="gviewer" aria-label="${t('galleryTitle')}"></dialog>
+    </div>`;
+  }
+
+  // পুরো স্ক্রিনে দেখা: আঙুলে সরানো, ট্যাগ করা জুব্বা, শেয়ার
+  function openViewer(list, id) {
+    const dlg = $('#gviewer'); if (!dlg) return;
+    let i = Math.max(0, list.findIndex(g => g.id === id));
+    dlg.innerHTML = `<div class="gv-top"><span id="gvCount"></span><span class="gv-act"><button class="gv-btn" id="gvShare" aria-label="${t('galShare')}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 15V3m0 0L8 7m4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg></button><button class="gv-btn" data-gvx aria-label="${t('close')}">×</button></span></div>
+      <div class="gv-track" id="gvTrack">${list.map(g => `<div class="gv-slide"><figure class="gv-fig"><img src="${esc(g.src)}" alt="${esc(g.caption)}" loading="lazy" decoding="async">
+        ${g.spots.map(s => `<a class="gv-dot" href="#/p/${esc(s.code)}" style="left:${s.x}%;top:${s.y}%" aria-label="${esc(L(byId(s.code).name))}"><i></i></a>`).join('')}</figure></div>`).join('')}</div>
+      <button class="gv-nav prev" data-gvm="-1" aria-label="${t('prev')}">‹</button><button class="gv-nav next" data-gvm="1" aria-label="${t('nextPhoto')}">›</button>
+      <div class="gv-bottom" id="gvBottom"></div>`;
+    const tr = $('#gvTrack');
+    const info = () => {
+      const g = list[i];
+      $('#gvCount').textContent = `${i + 1} / ${list.length}`;
+      const prods = g.codes.map(byId).filter(Boolean);
+      $('#gvBottom').innerHTML = `${g.caption ? `<p class="gv-cap">${esc(g.caption)}</p>` : ''}${prods.length ? `<p class="gv-in">${t('inThisPhoto')}</p><div class="gv-prods">${prods.map(p => `<a class="gv-prod" href="#/p/${p.id}">${media(p, 0, true)}<span><b>${esc(L(p.name))}</b><small>${esc(L(p.color))}</small><strong>${money(p.price)}</strong></span><em>${t('buyThis')}</em></a>`).join('')}</div>` : ''}`;
+      history.replaceState(null, '', '#/gallery/' + g.id);
+    };
+    const go = (n, smooth) => { i = Math.max(0, Math.min(list.length - 1, n)); tr.scrollTo({ left: i * tr.clientWidth, behavior: smooth ? 'smooth' : 'auto' }); info(); };
+    let st; tr.addEventListener('scroll', () => { clearTimeout(st); st = setTimeout(() => { const n = Math.round(tr.scrollLeft / tr.clientWidth); if (n !== i) { i = n; info(); } }, 80); }, { passive: true });
+    dlg.onclick = e => {
+      if (e.target.closest('[data-gvx]')) return dlg.close();
+      const m = e.target.closest('[data-gvm]'); if (m) return go(i + Number(m.dataset.gvm), true);
+      if (e.target.closest('a')) dlg.close();
+    };
+    dlg.onkeydown = e => { if (e.key === 'ArrowRight') go(i + 1, true); if (e.key === 'ArrowLeft') go(i - 1, true); };
+    dlg.onclose = () => { if (location.hash.startsWith('#/gallery/')) history.replaceState(null, '', '#/gallery'); document.body.classList.remove('sheet-open'); };
+    $('#gvShare').onclick = async () => {
+      const url = location.origin + '/#/gallery/' + list[i].id;
+      try { if (navigator.share) await navigator.share({ title: 'Al Hadaf', text: list[i].caption || 'Al Hadaf', url }); else { await navigator.clipboard.writeText(url); toast(t('linkCopied')); } } catch (e) { /* cancelled */ }
+    };
+    dlg.showModal(); document.body.classList.add('sheet-open');
+    requestAnimationFrame(() => go(i, false));
+  }
 
   // ---------- lightbox ----------
   let lb = { items: [], i: 0 };
@@ -1224,7 +1256,10 @@
     else if (parts[0] === 'p') { const p = byId(parts[1]); active = p ? p.cat : ''; view.innerHTML = pageProduct(parts[1]); bindProduct(p); }
     else if (parts[0] === 'page') view.innerHTML = pageInfo(parts[1]);
     else if (parts[0] === 'custom') { active = 'custom'; view.innerHTML = pageCustom(); bindCustom(); }
-    else if (parts[0] === 'gallery') { active = 'gallery'; view.innerHTML = pageGallery(); bindGallery(); }
+    else if (parts[0] === 'gallery') {
+      if (parts[1] && $('#gviewer') && $('#gviewer').open) return; // ভিউয়ারের ভেতরে ঠিকানা বদল
+      active = 'gallery'; view.innerHTML = pageGallery(); bindGallery(parts[1]);
+    }
     else if (parts[0] === 'track') { view.innerHTML = pageTrack(); bindTrack(); }
     else if (parts[0] === 'wishlist') view.innerHTML = pageWishlist();
     else if (parts[0] === 'account') { view.innerHTML = pageAccount(); bindAccount(); }
@@ -1259,14 +1294,24 @@
     root.querySelectorAll('[data-reveal]:not(.in)').forEach(el => (io && !calm.matches ? io.observe(el) : el.classList.add('in')));
   }
 
-  function bindGallery() {
-    const f = $('.gal-filter'); if (!f) return;
-    f.addEventListener('click', e => {
-      const b = e.target.closest('[data-gcat]'); if (!b) return;
-      galCat = b.dataset.gcat;
-      const y = window.scrollY; route(); window.scrollTo(0, y);
+  function bindGallery(openId) {
+    const root = $('.gpage'); if (!root) return;
+    root.addEventListener('click', e => {
+      const b = e.target.closest('[data-gcat]');
+      if (b) { galCat = b.dataset.gcat; const y = window.scrollY; route(); window.scrollTo(0, y); return; }
+      const o = e.target.closest('[data-gopen]');
+      if (o) { const all = allGallery(), inList = galleryList().some(g => g.id === o.dataset.gopen); openViewer(inList ? galleryList() : all.filter(g => g.featured), o.dataset.gopen); }
     });
+    // ফিচার্ড স্লাইড নিজে নিজে বদলায়
+    const hero = $('#ghero'), slides = hero ? [...hero.querySelectorAll('.gh-slide')] : [];
+    if (slides.length > 1 && !calm.matches) {
+      let k = 0; const dots = [...hero.querySelectorAll('.gh-dots i')];
+      const tm = setInterval(() => { if (!document.body.contains(hero)) return clearInterval(tm); if (document.hidden || $('#gviewer').open) return;
+        slides[k].classList.remove('on'); dots[k].classList.remove('on'); k = (k + 1) % slides.length; slides[k].classList.add('on'); dots[k].classList.add('on'); }, 5000);
+    }
+    if (openId) { const all = allGallery(); if (all.some(g => g.id === openId)) { galCat = 'all'; openViewer(all, openId); } }
   }
+
   window.addEventListener('hashchange', () => { document.querySelectorAll('dialog[open]').forEach(d => d.close()); route(); window.scrollTo(0, 0); });
 
   // মোবাইল: নিচ থেকে উঠে আসা ফিল্টার আর সর্ট শিট

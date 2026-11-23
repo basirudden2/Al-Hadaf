@@ -655,3 +655,17 @@ dialog.adlg.wide { width: min(900px, 100% - 24px); }
 .pay-seg button:last-child { border-right: 0; }
 .pay-seg [aria-pressed="true"] { background: var(--text); color: #fff; }
 .paid-edit { background: #FFF8EE; border: 1px solid #F3DDBC; border-radius: 6px; padding: 12px 14px 4px; margin: 8px 0 12px; }
+/* ===== v12 gallery admin ===== */
+.gal-opts { display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center; }
+.inline-in { padding: 7px 10px; border: 1px solid var(--line); border-radius: 4px; font: inherit; font-size: 14px; margin-left: 6px; }
+.gal-img { position: relative; aspect-ratio: 4 / 5 !important; }
+.feat-tag, .spot-tag { position: absolute; left: 8px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 3px; }
+.feat-tag { top: 8px; background: #C9A227; color: #1A1A1A; } .spot-tag { bottom: 8px; background: rgba(0,0,0,.65); color: #fff; }
+.gal-card.is-feat { border-color: #C9A227; box-shadow: 0 0 0 1px #C9A227; }
+.check.sm { font-size: 13px; }
+.tag-grid { display: grid; grid-template-columns: 1fr 280px; gap: 18px; }
+.tag-img { position: relative; cursor: crosshair; border-radius: 6px; overflow: hidden; background: var(--bg); align-self: start; }
+.tag-img img { width: 100%; display: block; }
+.tdot { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; background: #fff; color: #1A1A1A; font-size: 12px; font-weight: 700; display: grid; place-items: center; box-shadow: 0 0 0 3px rgba(0,0,0,.35); pointer-events: none; }
+.tag-list { padding-left: 20px; } .tag-list li { margin-bottom: 8px; } .tag-list li > input { width: calc(100% - 44px); padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+@media (max-width: 800px) { .tag-grid { grid-template-columns: 1fr; } }

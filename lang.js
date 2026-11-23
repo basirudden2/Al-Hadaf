@@ -374,3 +374,7 @@ Object.assign(STR.en, { navHome: 'Home', navShop: 'Shop', navSearch: 'Search', n
 Object.assign(STR.bn, { navHome: 'হোম', navShop: 'শপ', navSearch: 'খুঁজুন', navSaved: 'পছন্দ', navCart: 'কার্ট',
   waOrder: 'WhatsApp-এ অর্ডার করুন', waOrderMsg: (n, code, color, size, price, link) => `আসসালামু আলাইকুম, আমি অর্ডার করতে চাই:\n${n} (${code})\nরং: ${color}\nসাইজ: ${size}\nদাম: ${price}\n${link}`,
   pickSizeFirst: 'আগে সাইজ বেছে নিন', savedDetails: 'আগের বারের তথ্য বসিয়ে দেওয়া হয়েছে।' });
+
+// ===== v12: নতুন গ্যালারি =====
+Object.assign(STR.en, { galAll: 'All', galProducts: 'Our thobes', shopLook: 'Shop the look', buyThis: 'Buy', galShare: 'Share', galCount: n => `${n} photo${n === 1 ? '' : 's'}`, inThisPhoto: 'In this photo' });
+Object.assign(STR.bn, { galAll: 'সব', galProducts: 'আমাদের জুব্বা', shopLook: 'ছবির জুব্বা কিনুন', buyThis: 'কিনুন', galShare: 'শেয়ার', galCount: n => `${n}টি ছবি`, inThisPhoto: 'এই ছবিতে' });

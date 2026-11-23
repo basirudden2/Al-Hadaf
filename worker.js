@@ -11,6 +11,10 @@ const ORDER_STATUSES = ['new', 'confirmed', 'shipped', 'delivered', 'cancelled']
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 export default {
+  // প্রতিদিন রাতে Telegram-এ দিনের হিসাব (wrangler.jsonc-এর triggers.crons)
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => { await ensureSchema(env); await dailySummary(env, false); })());
+  },
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
     try {
@@ -127,7 +131,10 @@ const MIGRATIONS = [
   `ALTER TABLE orders ADD COLUMN cancel_type TEXT DEFAULT ''`,
   `ALTER TABLE orders ADD COLUMN cancel_reason TEXT DEFAULT ''`,
   `ALTER TABLE customer_notes ADD COLUMN follow_up TEXT DEFAULT ''`,
-  `ALTER TABLE customer_notes ADD COLUMN follow_note TEXT DEFAULT ''`
+  `ALTER TABLE customer_notes ADD COLUMN follow_note TEXT DEFAULT ''`,
+  `ALTER TABLE gallery ADD COLUMN album TEXT DEFAULT ''`,
+  `ALTER TABLE gallery ADD COLUMN featured INTEGER DEFAULT 0`,
+  `ALTER TABLE gallery ADD COLUMN spots TEXT DEFAULT '[]'`
 ];
 
 const DEFAULT_SHOP = {
@@ -265,8 +272,8 @@ const ROLES = {
 };
 const AREAS = {
   sales: ['orders', 'courier', 'chats', 'abandoned', 'customers', 'customer', 'fraud', 'stock-alerts', 'sales', 'due'],
-  catalog: ['products', 'categories', 'custom', 'fabrics', 'gallery', 'upload', 'banners', 'reviews', 'coupons', 'sms', 'settings'],
-  money: ['stats', 'report', 'finance', 'expenses', 'acc', 'goals'],
+  catalog: ['products', 'categories', 'custom', 'fabrics', 'gallery', 'gallery-opts', 'upload', 'banners', 'reviews', 'coupons', 'sms', 'settings'],
+  money: ['stats', 'report', 'finance', 'expenses', 'acc', 'goals', 'summary'],
   people: ['users', 'audit']
 };
 function can(user, res, method) {
@@ -446,6 +453,14 @@ async function adminApi(req, env, path, m, url, ctx, user) {
     if (m === 'PUT' && id) return saveFabric(req, env, id);
     if (m === 'DELETE' && id) return deleteFabric(env, id);
   }
+  if (res === 'gallery-opts' && m === 'PUT') {
+    const b = await readJson(req) || {};
+    const v = { products: b.products !== false };
+    await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('gallery_opts', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(JSON.stringify(v)).run();
+    return json(v);
+  }
+  if (res === 'gallery-opts' && m === 'GET') return json(await galleryOpts(env));
+  if (res === 'summary' && m === 'POST') { const r = await dailySummary(env, true); return r.sent ? json({ ok: true }) : bad(r.reason || 'Could not send.'); }
   if (res === 'gallery') {
     if (m === 'GET') return json((await env.DB.prepare('SELECT * FROM gallery ORDER BY sort, id DESC').all()).results);
     if (m === 'POST') return saveGallery(req, env, 0);
@@ -547,7 +562,9 @@ async function getStore(env) {
         color: { en: f.color_en || '', bn: f.color_bn || f.color_en || '' }, family: f.family || '', composition: f.composition || '', origin: f.origin || '', season: f.season || '',
         left: f.stock == null ? null : Math.floor(f.stock / (f.per_thobe || 3.5)) }))
     } : null,
-    gallery: gallery.results.map(g => ({ id: g.id, image: '/img/' + g.image, caption: { en: g.caption_en, bn: g.caption_bn }, product: g.product_code || '' })),
+    gallery: gallery.results.map(g => ({ id: g.id, image: '/img/' + g.image, caption: { en: g.caption_en, bn: g.caption_bn }, product: g.product_code || '',
+      album: g.album || '', featured: !!g.featured, spots: (() => { try { return JSON.parse(g.spots || '[]'); } catch (e) { return []; } })() })),
+    galleryOpts: await galleryOpts(env),
     banners: banners.results.map(b => ({ image: '/img/' + b.image, title: { en: b.title_en, bn: b.title_bn }, text: { en: b.text_en, bn: b.text_bn }, btn: { en: b.btn_en, bn: b.btn_bn }, link: b.link })),
     features: { otp: smsReady(env), bkashPay: bkashReady(env) }
   };
@@ -1127,13 +1144,15 @@ async function deleteFabric(env, id) {
 // ---------- admin: gallery ----------
 async function saveGallery(req, env, id) {
   const b = await readJson(req) || {};
-  const vals = [str(b.caption_en, 200), str(b.caption_bn, 200), str(b.product_code, 40).toUpperCase(), int(b.sort)];
+  // ছবিতে ট্যাগ করা জুব্বা: [{code, x, y}] (x, y শতাংশে)
+  const spots = (Array.isArray(b.spots) ? b.spots : []).slice(0, 8).map(p => ({ code: str(p.code, 40).toUpperCase(), x: Math.max(0, Math.min(100, Number(p.x) || 0)), y: Math.max(0, Math.min(100, Number(p.y) || 0)) })).filter(p => p.code);
+  const vals = [str(b.caption_en, 200), str(b.caption_bn, 200), str(b.product_code, 40).toUpperCase(), int(b.sort), str(b.album, 40), b.featured ? 1 : 0, JSON.stringify(spots)];
   if (id) {
-    await env.DB.prepare('UPDATE gallery SET caption_en=?, caption_bn=?, product_code=?, sort=? WHERE id=?').bind(...vals, id).run();
+    await env.DB.prepare('UPDATE gallery SET caption_en=?, caption_bn=?, product_code=?, sort=?, album=?, featured=?, spots=? WHERE id=?').bind(...vals, id).run();
   } else {
     const image = imgKey(b.image);
     if (!image) return bad('Upload a photo first.');
-    await env.DB.prepare('INSERT INTO gallery (caption_en, caption_bn, product_code, sort, image) VALUES (?,?,?,?,?)').bind(...vals, image).run();
+    await env.DB.prepare('INSERT INTO gallery (caption_en, caption_bn, product_code, sort, album, featured, spots, image) VALUES (?,?,?,?,?,?,?,?)').bind(...vals, image).run();
   }
   return json({ ok: true });
 }
@@ -2417,4 +2436,42 @@ async function dashExtras(env) {
     mom: { orders: monthNow.n, revenue: monthNow.v, prevOrders: monthPrev.n, prevRevenue: monthPrev.v, ordersPct: pctChange(monthNow.n, monthPrev.n), revenuePct: pctChange(monthNow.v, monthPrev.v) },
     dueTotal: { n: due.n, v: due.v }, topCustomers: topC.results, followUps: fu.results
   };
+}
+
+// ================= v12: গ্যালারি সেটিং, রাতের সারাংশ =================
+async function galleryOpts(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gallery_opts'").first();
+  const v = row ? JSON.parse(row.value) : {};
+  return { products: v.products !== false };
+}
+
+async function dailySummary(env, manual) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return { sent: false, reason: 'Telegram is not connected. Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in Cloudflare.' };
+  const D = env.DB, BD = "date(created_at, '+6 hours')", today = bdNow().toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.parse(today) + 864e5).toISOString().slice(0, 10);
+  const [ch, newO, toShip, due, fu, low, chats, cancels] = await Promise.all([
+    D.prepare(`SELECT COALESCE(channel, 'website') AS ch, COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM orders WHERE status != 'cancelled' AND ${BD} = ? GROUP BY ch`).bind(today).all(),
+    D.prepare("SELECT COUNT(*) AS n FROM orders WHERE status = 'new'").first(),
+    D.prepare("SELECT COUNT(*) AS n FROM orders WHERE status = 'confirmed'").first(),
+    D.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(total - paid_amount), 0) AS v FROM orders WHERE delivery_mode = 'handover' AND status != 'cancelled' AND total > paid_amount").first(),
+    D.prepare("SELECT n.phone, n.follow_note, (SELECT MAX(name) FROM orders WHERE substr(phone, -11) = n.phone) AS name FROM customer_notes n WHERE n.follow_up != '' AND n.follow_up <= ? ORDER BY n.follow_up LIMIT 8").bind(tomorrow).all(),
+    D.prepare('SELECT COUNT(*) AS n FROM product_sizes s JOIN products p ON p.id = s.product_id WHERE p.active = 1 AND s.stock <= 2').first(),
+    D.prepare('SELECT COUNT(*) AS n FROM chats WHERE admin_unread > 0').first(),
+    D.prepare(`SELECT COUNT(*) AS n FROM orders WHERE status = 'cancelled' AND ${BD} = ?`).bind(today).first()
+  ]);
+  const sales = ch.results.reduce((t, r) => t + r.v, 0), cnt = ch.results.reduce((t, r) => t + r.n, 0);
+  let profit = null;
+  try { profit = (await profitReport(env, today, today, 'all', true)).net; } catch (e) { /* skip */ }
+  const tk = n => 'BDT ' + Number(n || 0).toLocaleString('en-IN');
+  const label = { website: 'Website', shop: 'Shop', facebook: 'Facebook', whatsapp: 'WhatsApp', phone: 'Phone', other: 'Other' };
+  const sections = [
+    [`🌙 Al Hadaf — ${today}${manual ? ' (test)' : ''}`],
+    [`🛍 Sales today: ${cnt} · ${tk(sales)}`, ...ch.results.map(r => `   • ${label[r.ch] || r.ch}: ${r.n} · ${tk(r.v)}`),
+      profit != null ? `💰 Profit today (before rent etc.): ${tk(profit)}` : '', cancels.n ? `✕ Cancelled/returned today: ${cancels.n}` : ''],
+    [`📦 To confirm: ${newO.n} · To ship: ${toShip.n}`, due.n ? `🧾 Due from customers: ${tk(due.v)} (${due.n})` : '', chats.n ? `💬 Chats waiting: ${chats.n}` : '', low.n ? `⚠️ Sizes almost out of stock: ${low.n}` : ''],
+    fu.results.length ? ['📞 Call tomorrow:', ...fu.results.map(f => `   • ${f.name || ''} ${f.phone}${f.follow_note ? ' — ' + f.follow_note : ''}`)] : []
+  ];
+  const lines = sections.map(sec => sec.filter(Boolean)).filter(sec => sec.length).map(sec => sec.join('\n')).join('\n\n');
+  const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text: lines }) });
+  return r.ok ? { sent: true } : { sent: false, reason: 'Telegram did not accept the message. Check the token and chat ID.' };
 }

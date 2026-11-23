@@ -862,6 +862,14 @@ async function uploadImage(req, env) {
   if (!ext) return bad('Only WebP, JPG or PNG images.');
   const buf = await req.arrayBuffer();
   if (!buf.byteLength || buf.byteLength > MAX_IMAGE_BYTES) return bad('Image must be under 5 MB.');
+  // ছোট কপি (কার্ডের জন্য): মূল ছবির নামের সাথে "-sm.webp", যাতে ওয়েবসাইট নিজেই খুঁজে পায়
+  const of = req.headers.get('x-thumb-for') || '';
+  if (of) {
+    if (!/^[a-z0-9-]+\.(webp|jpg|png)$/.test(of) || of.includes('-sm.')) return bad('Bad image.');
+    const tkey = of.replace(/\.(webp|jpg|png)$/, '-sm.webp');
+    await env.IMAGES.put(tkey, buf, { metadata: { type } });
+    return json({ key: tkey });
+  }
   const key = `${crypto.randomUUID()}.${ext}`;
   await env.IMAGES.put(key, buf, { metadata: { type } });
   return json({ key, url: '/img/' + key });

@@ -362,3 +362,15 @@ Object.assign(STR.bn, {
   fsCustom: 'দুই সাইজের মাঝামাঝি? নিজের মাপে বানিয়ে নিন।', fsErr: 'উচ্চতা আর ওজন লিখুন।', fsYour: s => `আপনার সাইজ: ${s}`,
   installApp: 'আল হাদাফ অ্যাপ ইনস্টল করুন', installShort: 'অ্যাপ ইনস্টল', installIos: 'আইফোনে: শেয়ার বাটনে চাপ দিন, তারপর "Add to Home Screen"।', installDone: 'আল হাদাফ এখন আপনার হোম স্ক্রিনে।'
 });
+
+// ===== v12: মোবাইলের ফিল্টার শিট =====
+Object.assign(STR.en, { filter: 'Filter', sortBy: 'Sort', showResults: n => `Show ${n} result${n === 1 ? '' : 's'}`, filtersTitle: 'Filter thobes' });
+Object.assign(STR.bn, { filter: 'ফিল্টার', sortBy: 'সাজান', showResults: n => `${n}টি ফলাফল দেখুন`, filtersTitle: 'জুব্বা ফিল্টার করুন' });
+
+// ===== v12: নিচের মেনু, WhatsApp অর্ডার =====
+Object.assign(STR.en, { navHome: 'Home', navShop: 'Shop', navSearch: 'Search', navSaved: 'Saved', navCart: 'Cart',
+  waOrder: 'Order on WhatsApp', waOrderMsg: (n, code, color, size, price, link) => `Assalamu alaikum, I want to order:\n${n} (${code})\nColour: ${color}\nSize: ${size}\nPrice: ${price}\n${link}`,
+  pickSizeFirst: 'Choose your size first', savedDetails: 'Your details from last time are filled in.' });
+Object.assign(STR.bn, { navHome: 'হোম', navShop: 'শপ', navSearch: 'খুঁজুন', navSaved: 'পছন্দ', navCart: 'কার্ট',
+  waOrder: 'WhatsApp-এ অর্ডার করুন', waOrderMsg: (n, code, color, size, price, link) => `আসসালামু আলাইকুম, আমি অর্ডার করতে চাই:\n${n} (${code})\nরং: ${color}\nসাইজ: ${size}\nদাম: ${price}\n${link}`,
+  pickSizeFirst: 'আগে সাইজ বেছে নিন', savedDetails: 'আগের বারের তথ্য বসিয়ে দেওয়া হয়েছে।' });

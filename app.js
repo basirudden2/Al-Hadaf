@@ -18,7 +18,10 @@
     set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
   };
 
-  let lang = store.get(LANG_KEY) === 'bn' ? 'bn' : 'en';
+  // আগে বেছে না থাকলে বাংলাদেশের সময় অঞ্চল বা বাংলা ব্রাউজার হলে বাংলায় খোলে
+  const savedLang = store.get(LANG_KEY);
+  let lang = savedLang === 'bn' || savedLang === 'en' ? savedLang
+    : ((Intl.DateTimeFormat().resolvedOptions().timeZone || '') === 'Asia/Dhaka' || /^bn/i.test(navigator.language || '')) ? 'bn' : 'en';
   let SHOP = { whatsapp: '', phone: '', email: '', bkash: '', facebook: '', instagram: '', messenger: '', youtube: '', tiktok: '', address: { en: '', bn: '' }, deliveryInside: 0, deliveryOutside: 0, announce: { en: '', bn: '' } };
   let CUSTOM = null;
   let GALLERY = [];
@@ -110,7 +113,7 @@
       };
     }
     const { p, s } = findSize(i.sizeId);
-    return { name: L(p.name), price: p.price, max: Math.min(10, s.stock), href: '#/p/' + p.id, media: media(p, 0), sub: [L(p.color), t('sizeIs', esc(s.label))] };
+    return { name: L(p.name), price: p.price, max: Math.min(10, s.stock), href: '#/p/' + p.id, media: media(p, 0, true), sub: [L(p.color), t('sizeIs', esc(s.label))] };
   }
   const saveCart = () => store.set(CART_KEY, JSON.stringify(cart));
 
@@ -135,9 +138,14 @@
     return `<svg viewBox="${vb}" aria-hidden="true">${inner}</svg>`;
   }
   const views = p => (p.images && p.images.length) ? p.images.map((_, i) => i) : (p.shape === 'thobe' ? ['front', 'back', 'detail'] : ['front']);
-  function media(p, v = 0) {
+  // ছোট কপি (-sm.webp) আগে, না থাকলে মূল ছবি
+  const sm = src => String(src).replace(/\.(webp|jpg|png)$/, '-sm.webp');
+  const imgTag = (src, alt, small, eager) => small && /^\/img\//.test(src)
+    ? `<img src="${esc(sm(src))}" data-full="${esc(src)}" onerror="this.onerror=null;this.src=this.dataset.full" alt="${esc(alt || '')}" loading="${eager ? 'eager' : 'lazy'}" decoding="async">`
+    : `<img src="${esc(src)}" alt="${esc(alt || '')}" loading="${eager ? 'eager' : 'lazy'}" decoding="async">`;
+  function media(p, v = 0, small) {
     const src = p.images && typeof v === 'number' ? p.images[v] : null;
-    if (src) return `<img src="${esc(src)}" alt="${esc(L(p.name))}" loading="lazy">`;
+    if (src) return imgTag(src, L(p.name), small);
     return `<div class="ph">${art(p, typeof v === 'string' ? v : 'front')}</div>`;
   }
   const priceHtml = p => p.compare
@@ -152,10 +160,10 @@
   const bagIcon = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M5 8h14l-1 12H6L5 8Z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8M12 11.5v5M9.5 14h5" stroke-linecap="round"/></svg>';
   function card(p, open) {
     const sib = siblingsOf(p), out = stockOf(p) === 0, off = pctOff(p);
-    const alt = p.images && p.images[1] ? `<div class="card-alt">${media(p, 1)}</div>` : '';
+    const alt = p.images && p.images[1] ? `<div class="card-alt">${media(p, 1, true)}</div>` : '';
     return `<div class="card-wrap pc" data-card="${esc(p.id)}">
       <div class="pc-media">
-        <a class="pc-img" href="#/p/${p.id}" tabindex="-1" aria-hidden="true">${media(p, 0)}${alt}</a>
+        <a class="pc-img" href="#/p/${p.id}" tabindex="-1" aria-hidden="true">${media(p, 0, true)}${alt}</a>
         <div class="pc-badges">${off ? `<span class="b-sale">${t('sale')}</span>` : ''}${p.badge ? `<span class="badge">${esc(L(p.badge))}</span>` : ''}</div>
         ${wishBtn(p)}
         <div class="pc-bar">
@@ -234,7 +242,7 @@
     const prices = Object.fromEntries(PRODUCTS.map(p => [p.id, p]));
     const item = (g, k, hidden) => {
       const pid = g.href ? g.href.split('/').pop() : '', p = prices[pid];
-      const inner = `<img src="${esc(g.src)}" alt="" loading="${k < 6 ? 'eager' : 'lazy'}"><span class="tg-cap"><b>${esc(p ? L(p.name) : g.caption)}</b>${p ? `<i>${money(p.price)}</i>` : ''}</span>`;
+      const inner = `${imgTag(g.src, '', true, k < 6)}<span class="tg-cap"><b>${esc(p ? L(p.name) : g.caption)}</b>${p ? `<i>${money(p.price)}</i>` : ''}</span>`;
       const tab = hidden ? 'tabindex="-1"' : '';
       return g.href ? `<a class="tg-item" href="${g.href}" ${tab} aria-label="${esc(g.caption)}">${inner}</a>`
         : `<button class="tg-item" data-gal="${k % list.length}" ${tab} aria-label="${esc(g.caption || t('photo'))}">${inner}</button>`;
@@ -296,6 +304,10 @@
   const PRICE_STEPS = [2000, 3000, 5000];
   const priceBucket = v => v < PRICE_STEPS[0] ? 'a' : v < PRICE_STEPS[1] ? 'b' : v < PRICE_STEPS[2] ? 'c' : 'd';
   const bucketLabel = k => ({ a: t('priceUnder', PRICE_STEPS[0]), b: t('priceBetween', PRICE_STEPS[0], PRICE_STEPS[1]), c: t('priceBetween', PRICE_STEPS[1], PRICE_STEPS[2]), d: t('priceOver', PRICE_STEPS[2]) }[k]);
+  const applyFilt = (base, f) => byDesign(base.filter(p => (!f.colors.length || f.colors.includes(p.color.en))
+      && (!f.sizes.length || p.sizes.some(z => f.sizes.includes(z.label) && (!f.stock || z.stock > 0)))
+      && (!f.price || priceBucket(p.price) === f.price)
+      && (!f.stock || stockOf(p) > 0)));
   function pageCategory(id) {
     const c = catOf(id) || catOf('all');
     if (filt.cat !== c.id) filt = { cat: c.id, colors: [], sizes: [], price: '', stock: false };
@@ -303,11 +315,7 @@
     const colors = [...new Map(base.map(p => [p.color.en, p])).values()];
     const sizes = [...new Set(base.flatMap(p => p.sizes.map(z => z.label)))];
     const buckets = ['a', 'b', 'c', 'd'].filter(k => base.some(p => priceBucket(p.price) === k));
-    let list = base.filter(p => (!filt.colors.length || filt.colors.includes(p.color.en))
-      && (!filt.sizes.length || p.sizes.some(z => filt.sizes.includes(z.label) && (!filt.stock || z.stock > 0)))
-      && (!filt.price || priceBucket(p.price) === filt.price)
-      && (!filt.stock || stockOf(p) > 0));
-    list = byDesign(list);
+    let list = applyFilt(base, filt);
     if (sortBy === 'low') list.sort((a, b) => a.price - b.price);
     if (sortBy === 'high') list.sort((a, b) => b.price - a.price);
     if (sortBy === 'new') list.sort((a, b) => (b.isNew ? 1 : 0) - (a.isNew ? 1 : 0));
@@ -326,7 +334,25 @@
           ${drop(sortLabels[sortBy], 0, Object.entries(sortLabels).map(([k, l]) => `<label class="fopt"><input type="radio" name="fsort" data-f="sort" value="${k}" ${sortBy === k ? 'checked' : ''}>${l}</label>`).join(''), 'fsort')}
         </div>
       </div>
+      <div class="mfbar">
+        <button type="button" class="mf-btn" data-msheet="filter"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>${t('filter')}${n ? ` <b>${n}</b>` : ''}</button>
+        <button type="button" class="mf-btn" data-msheet="sort"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>${esc(sortLabels[sortBy])}</button>
+      </div>
       <div class="cat-head"><h1>${esc(L(c.name))}</h1><span class="muted">${list.length} ${t('items')}${n ? ` · <button class="text-btn" data-fclear>${t('fClear')}</button>` : ''}</span></div>
+      <dialog class="msheet" id="filterSheet" aria-label="${t('filtersTitle')}"><form method="dialog" class="ms-body" id="msForm">
+        <div class="ms-head"><span class="ms-grab" aria-hidden="true"></span><h2>${t('filtersTitle')}</h2><button type="button" class="icon-btn" data-mx aria-label="${t('close')}">×</button></div>
+        <div class="ms-scroll">
+          ${colors.length > 1 ? `<fieldset class="ms-sec"><legend>${t('fColor')}</legend><div class="ms-chips">${colors.map(p => `<label class="ms-chip"><input type="checkbox" data-mf="colors" value="${esc(p.color.en)}" ${filt.colors.includes(p.color.en) ? 'checked' : ''}><span><i style="--sw:${esc(p.color.hex)}"></i>${esc(L(p.color))}</span></label>`).join('')}</div></fieldset>` : ''}
+          ${sizes.length > 1 ? `<fieldset class="ms-sec"><legend>${t('fSize')}</legend><div class="ms-chips">${sizes.map(z => `<label class="ms-chip"><input type="checkbox" data-mf="sizes" value="${esc(z)}" ${filt.sizes.includes(z) ? 'checked' : ''}><span>${esc(z)}</span></label>`).join('')}</div></fieldset>` : ''}
+          ${buckets.length > 1 ? `<fieldset class="ms-sec"><legend>${t('fPrice')}</legend><div class="ms-chips">${buckets.map(k => `<label class="ms-chip"><input type="radio" name="mprice" data-mf="price" value="${k}" ${filt.price === k ? 'checked' : ''}><span>${bucketLabel(k)}</span></label>`).join('')}</div></fieldset>` : ''}
+          <label class="ms-toggle"><span>${t('inStockOnly')}</span><input type="checkbox" data-mf="stock" ${filt.stock ? 'checked' : ''}></label>
+        </div>
+        <div class="ms-foot"><button type="button" class="btn btn-outline" data-mclear>${t('fClear')}</button><button type="submit" class="btn btn-dark" id="msShow">${t('showResults', list.length)}</button></div>
+      </form></dialog>
+      <dialog class="msheet" id="sortSheet" aria-label="${t('sortBy')}"><form method="dialog" class="ms-body">
+        <div class="ms-head"><span class="ms-grab" aria-hidden="true"></span><h2>${t('sortBy')}</h2><button type="button" class="icon-btn" data-mx aria-label="${t('close')}">×</button></div>
+        <div class="ms-list">${Object.entries(sortLabels).map(([k, l]) => `<label class="ms-row"><span>${l}</span><input type="radio" name="msort" value="${k}" ${sortBy === k ? 'checked' : ''}></label>`).join('')}</div>
+      </form></dialog>
       ${list.length ? `<div class="grid">${list.map(p => card(p)).join('')}</div>` : `<div class="empty-state"><p class="muted">${n ? t('noMatch') : t('emptyList')}</p>${n ? `<button class="btn btn-outline" data-fclear>${t('fClear')}</button>` : ''}</div>`}
     </div>`;
   }
@@ -344,7 +370,11 @@
     return `<div class="wrap page pdp" data-id="${p.id}">
       <nav class="crumbs"><a href="#/">${t('home')}</a><span>/</span><a href="#/c/${c.id}">${esc(L(c.name))}</a><span>/</span><span>${esc(L(p.name))}</span></nav>
       <div class="pdp-grid">
-        <div class="gallery">
+        ${p.images && p.images.length ? `<div class="pswipe" aria-label="${t('photo')}">
+          <div class="ps-track" id="psTrack">${p.images.map((src, i) => `<button class="ps-slide" data-psi="${i}" aria-label="${t('photo')} ${i + 1}">${imgTag(src, L(p.name), false, i === 0)}</button>`).join('')}</div>
+          ${p.images.length > 1 ? `<div class="ps-dots">${p.images.map((_, i) => `<i class="${i ? '' : 'on'}"></i>`).join('')}</div><span class="ps-count" id="psCount">1 / ${p.images.length}</span>` : ''}
+        </div>` : ''}
+        <div class="gallery ${p.images && p.images.length ? 'has-swipe' : ''}">
           <div class="thumbs">${vs.length > 1 ? vs.map((v, i) => `<button class="thumb" data-view="${i}" aria-pressed="${i === 0}" aria-label="${i + 1}">${media(p, v)}</button>`).join('') : ''}</div>
           <div class="gallery-main ${p.images && p.images.length ? 'zoomable' : ''}" id="galleryMain" data-idx="0">${media(p, vs[0])}</div>
         </div>
@@ -369,6 +399,7 @@
             <button class="btn btn-outline" id="addBtn">${t('addToCart')}</button>
           </div>
           <button class="btn btn-dark btn-block" id="buyBtn">${t('buyNow')}</button>
+          ${SHOP.whatsapp ? `<button class="btn btn-wa btn-block" id="waOrderBtn">${icon('whatsapp', 18)}${t('waOrder')}</button>` : ''}
           ${deliveryEta()}
           <div class="pdp-links">
             <a class="link wa-ask" target="_blank" rel="noopener" href="${waLink(`${L(p.name)} (${p.id}), ${L(p.color)}`)}">${icon('whatsapp', 16)}${t('orderWa')}</a>
@@ -482,7 +513,7 @@
     const fabrics = (fams.length > 1 ? `<div class="fam-chips" role="group">${['all'].concat(fams).map(k => `<button type="button" class="fam" data-fam="${k}" aria-pressed="${(cu.fam || 'all') === k}">${k === 'all' ? t('famAll') : `<i style="--sw:${esc((CUSTOM.fabrics.find(f => f.family === k) || {}).hex || '#ccc')}"></i>${STR[lang].fam[k] || k}`}</button>`).join('')}</div>` : '')
       + `<div class="fab-cards">${CUSTOM.fabrics.map((f, i) => `<label class="fcard" data-family="${esc(f.family)}" ${cu.fam && cu.fam !== 'all' && f.family !== cu.fam ? 'hidden' : ''}>
         <input type="radio" name="fabric" value="${f.id}" ${cu.fabric === f.id ? 'checked' : ''}>
-        <span class="fc-img" style="--sw:${esc(f.hex)}">${f.image ? `<img src="${esc(f.image)}" alt="" loading="lazy">` : ''}
+        <span class="fc-img" style="--sw:${esc(f.hex)}">${f.image ? imgTag(f.image, '', true) : ''}
           ${f.image ? `<button type="button" class="fc-zoom" data-fzoom="${i}" aria-label="${t('zoomFabric')}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4M11 8v6M8 11h6"/></svg></button>` : ''}
           ${f.left != null && f.left < 5 ? `<em class="fc-few">${t('fewLeft', f.left)}</em>` : ''}<span class="fc-check" aria-hidden="true"></span></span>
         <span class="fc-txt"><strong>${esc(L(f.name))}</strong>
@@ -686,7 +717,7 @@
       <div class="cat-head"><div><h1>${t('galleryTitle')}</h1><p class="muted">${t('galleryIntro')}</p></div></div>
       ${cats.length > 2 ? `<div class="gal-filter" role="group" aria-label="${t('galleryTitle')}">${cats.map(([k, l]) => `<button class="gf" data-gcat="${esc(k)}" aria-pressed="${galCat === k}">${esc(l)}</button>`).join('')}</div>` : ''}
       ${list.length ? `<div class="masonry">${list.map((g, i) => `<figure class="m-item" data-reveal style="--d:${(i % 6) * 70}ms">
-        <button class="g-item" data-gal="${i}" aria-label="${esc(g.caption || t('photo') + ' ' + (i + 1))}"><img src="${esc(g.src)}" alt="${esc(g.caption)}" loading="lazy"></button>
+        <button class="g-item" data-gal="${i}" aria-label="${esc(g.caption || t('photo') + ' ' + (i + 1))}">${imgTag(g.src, g.caption, true)}</button>
         ${g.caption ? `<figcaption>${g.href ? `<a href="${g.href}">${esc(g.caption)}</a>` : esc(g.caption)}</figcaption>` : ''}</figure>`).join('')}</div>` : `<p class="muted">${t('galleryEmpty')}</p>`}
     </div>`;
   }
@@ -923,7 +954,7 @@
   }
 
   // ---------- উইশলিস্ট ----------
-  function renderWishCount() { $('#wishCount').textContent = wish.length; $('#wishCount').hidden = !wish.length; }
+  function renderWishCount() { $('#wishCount').textContent = wish.length; $('#wishCount').hidden = !wish.length; const b = $('#bnWish'); if (b) { b.textContent = wish.length; b.hidden = !wish.length; } }
   function toggleWish(id) {
     wish = wish.includes(id) ? wish.filter(x => x !== id) : [id].concat(wish);
     store.set(WISH_KEY, JSON.stringify(wish));
@@ -974,7 +1005,7 @@
     const q = $('#searchInput').value.trim(), out = $('#searchResults');
     if (!q) { out.innerHTML = `<p class="muted search-hint">${t('searchHint')}</p>`; return; }
     const list = searchProducts(q);
-    out.innerHTML = list.length ? list.map(p => `<a class="sr" href="#/p/${p.id}" data-close><span class="sr-media">${media(p, 0)}</span>
+    out.innerHTML = list.length ? list.map(p => `<a class="sr" href="#/p/${p.id}" data-close><span class="sr-media">${media(p, 0, true)}</span>
       <span class="sr-txt"><strong>${esc(L(p.name))}</strong><small class="muted">${esc(L(p.color))} · ${p.id}</small></span><span class="sr-price">${money(p.price)}</span></a>`).join('')
       : `<p class="muted search-hint">${t('searchNone', esc(q))}</p>`;
   }
@@ -1208,6 +1239,9 @@
     const titleEl = view.querySelector('h1');
     document.title = (parts[0] && titleEl ? titleEl.textContent + ' | ' : '') + 'Al Hadaf';
     view.classList.remove('view-in'); void view.offsetWidth; view.classList.add('view-in');
+    setHeadH();
+    const cur = !parts[0] ? 'home' : parts[0] === 'c' ? 'shop' : parts[0] === 'wishlist' ? 'wish' : '';
+    document.querySelectorAll('#bnav [data-bn]').forEach(a => a.setAttribute('aria-current', a.dataset.bn === cur ? 'page' : 'false'));
     markRecommended();
     reveal(view);
     px('PageView');
@@ -1235,7 +1269,36 @@
   }
   window.addEventListener('hashchange', () => { document.querySelectorAll('dialog[open]').forEach(d => d.close()); route(); window.scrollTo(0, 0); });
 
+  // মোবাইল: নিচ থেকে উঠে আসা ফিল্টার আর সর্ট শিট
+  // স্টিকি হেডারের উচ্চতা, যাতে ফিল্টার বার ঠিক তার নিচে আটকে থাকে
+  function setHeadH() { const h = document.querySelector('.site-header'); if (h) document.documentElement.style.setProperty('--head-h', h.offsetHeight + 'px'); }
+  window.addEventListener('resize', setHeadH);
+  function bindMobileSheets() {
+    const fs = $('#filterSheet'), ss = $('#sortSheet'); if (!fs) return;
+    const c = catOf(filt.cat) || catOf('all'), base = PRODUCTS.filter(p => c.id === 'all' || p.cat === c.id);
+    let draft = { ...filt, colors: [...filt.colors], sizes: [...filt.sizes] };
+    const count = () => { $('#msShow').textContent = t('showResults', applyFilt(base, draft).length); };
+    const open = d => { draft = { ...filt, colors: [...filt.colors], sizes: [...filt.sizes] }; d.showModal(); document.body.classList.add('sheet-open'); };
+    $('#view').querySelectorAll('[data-msheet]').forEach(b => b.onclick = () => open(b.dataset.msheet === 'sort' ? ss : fs));
+    [fs, ss].forEach(d => {
+      d.addEventListener('close', () => document.body.classList.remove('sheet-open'));
+      d.addEventListener('click', e => { if (e.target === d) d.close('cancel'); });
+      d.querySelectorAll('[data-mx]').forEach(x => x.onclick = () => d.close('cancel'));
+    });
+    $('#msForm').addEventListener('change', e => {
+      const k = e.target.dataset.mf; if (!k) return;
+      if (k === 'colors' || k === 'sizes') draft[k] = e.target.checked ? draft[k].concat(e.target.value) : draft[k].filter(x => x !== e.target.value);
+      if (k === 'price') draft.price = e.target.value;
+      if (k === 'stock') draft.stock = e.target.checked;
+      count();
+    });
+    fs.querySelector('[data-mclear]').onclick = () => { draft = { cat: filt.cat, colors: [], sizes: [], price: '', stock: false }; fs.querySelectorAll('input').forEach(i => { i.checked = false; }); count(); };
+    // "ফলাফল দেখুন" চাপলে বা বন্ধ করলে ফিল্টার বসে; বাইরে চাপলে বাতিল
+    fs.addEventListener('close', () => { if (fs.returnValue === 'cancel') return; filt = draft; route(); window.scrollTo(0, 0); });
+    ss.addEventListener('change', e => { if (e.target.name === 'msort') { sortBy = e.target.value; ss.close(); route(); } });
+  }
   function bindCategory() {
+    bindMobileSheets();
     const box = $('#filters'); if (!box) return;
     const redraw = () => {
       const open = [...box.querySelectorAll('details')].findIndex(d => d.open), y = window.scrollY;
@@ -1257,6 +1320,22 @@
 
   function bindProduct(p) {
     if (!p) return;
+    // মোবাইলে আঙুল দিয়ে ছবি সরানো, নিচে বিন্দু
+    const tr = $('#psTrack');
+    if (tr) {
+      const dots = [...document.querySelectorAll('.ps-dots i')];
+      tr.addEventListener('scroll', () => { const i = Math.round(tr.scrollLeft / tr.clientWidth); dots.forEach((d, k) => d.classList.toggle('on', k === i)); const c = $('#psCount'); if (c) c.textContent = `${i + 1} / ${dots.length}`; }, { passive: true });
+      tr.addEventListener('click', e => { const sl = e.target.closest('[data-psi]'); if (sl) openLightbox(p.images.map(src => ({ src, caption: L(p.name) })), Number(sl.dataset.psi)); });
+    }
+    const wa = $('#waOrderBtn');
+    if (wa) wa.onclick = () => {
+      const sel = document.querySelector('.sizes .size[aria-pressed="true"]');
+      if (!sel && p.sizes.length > 1) { $('#sizeErr').textContent = t('pickSizeFirst'); $('#sizeErr').hidden = false; document.querySelector('.sizes').scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+      const z = sel ? p.sizes.find(x => String(x.id) === sel.dataset.size) : p.sizes[0];
+      const msg = t('waOrderMsg', L(p.name), p.id, L(p.color), z ? z.label : '-', money(p.price), location.origin + '/p/' + p.id);
+      px('Contact', { content_ids: [p.id] });
+      window.open(waLink(msg), '_blank', 'noopener');
+    };
     // মোবাইলে নিচে স্থায়ী "কার্টে যোগ করুন" বার, যখন আসল বাটন স্ক্রিনের বাইরে
     const bar = document.createElement('div');
     bar.className = 'sticky-buy'; bar.innerHTML = `<div><strong>${esc(L(p.name))}</strong><span>${money(p.price)}</span></div><button class="btn btn-dark">${t('addToCart')}</button>`;
@@ -1423,6 +1502,7 @@
     lastCount = n;
     $('#cartCount').textContent = n;
     $('#cartCount').hidden = n === 0;
+    const bc = $('#bnCart'); if (bc) { bc.textContent = n; bc.hidden = n === 0; }
   }
   function renderCart() {
     renderCartCount();
@@ -1515,6 +1595,13 @@
     form.addEventListener('change', update);
     form.addEventListener('submit', e => { e.preventDefault(); submitOrder(form); });
     form.addEventListener('input', e => { if (['custPhone', 'custName', 'custAddress'].includes(e.target.name)) captureAbandoned(form); });
+    // এই ফোনে আগের বার দেওয়া নাম, নম্বর, ঠিকানা
+    let last = null; try { last = JSON.parse(store.get('alhadaf_checkout') || 'null'); } catch (e) { /* none */ }
+    if (last && !acct) {
+      form.elements.custName.value = last.name || ''; form.elements.custPhone.value = last.phone || ''; form.elements.custAddress.value = last.address || '';
+      if (last.area === 'outside') form.elements.area.value = 'outside';
+      const note = document.createElement('p'); note.className = 'muted small saved-note'; note.textContent = t('savedDetails'); form.prepend(note);
+    }
     if (acct) {
       const pr = acct.profile || {};
       form.elements.custPhone.value = acct.phone;
@@ -1554,6 +1641,7 @@
     const showErr = m => { $('#coErr').innerHTML = m; $('#coErr').hidden = false; };
     if (errs.length) return showErr(errs.join('<br>'));
 
+    store.set('alhadaf_checkout', JSON.stringify({ name, phone, address, area }));
     const btn = form.querySelector('[type=submit]');
     btn.disabled = true; btn.textContent = t('placing');
     let res, data;
@@ -1607,6 +1695,11 @@
   }));
   $('#menuOpen').addEventListener('click', () => { renderMenu(); $('#menuDialog').showModal(); });
   $('#cartOpen').addEventListener('click', () => { renderCart(); $('#cartDialog').showModal(); });
+  $('#bnav').addEventListener('click', e => {
+    const b = e.target.closest('[data-bn]'); if (!b) return;
+    if (b.dataset.bn === 'cart') { renderCart(); $('#cartDialog').showModal(); }
+    if (b.dataset.bn === 'search') $('#searchOpen').click();
+  });
   document.addEventListener('click', e => { if (e.target.closest('[data-lang]')) switchLang(); });
   $('#langBtn').setAttribute('data-lang', '');
 
@@ -1653,6 +1746,7 @@
     $('#cartOpen').setAttribute('aria-label', t('cartTitle'));
     $('#chatFab').setAttribute('aria-label', t('chatTitle'));
     $('#searchOpen').setAttribute('aria-label', t('search'));
+    [['home', 'navHome'], ['shop', 'navShop'], ['search', 'navSearch'], ['wish', 'navSaved'], ['cart', 'navCart']].forEach(([k, l]) => { const el = document.querySelector(`[data-bn="${k}"] span`); if (el) el.textContent = t(l); });
     $('#wishLink').setAttribute('aria-label', t('wishlist'));
     $('#accountLink').setAttribute('aria-label', t('account'));
     $('#accountLink').hidden = !FEATURES.otp;

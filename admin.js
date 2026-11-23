@@ -55,7 +55,33 @@
 
   async function uploadFile(file, max) {
     const blob = await compress(file, max);
-    return (await api('upload', { method: 'POST', body: blob, headers: { 'content-type': blob.type } })).key;
+    const key = (await api('upload', { method: 'POST', body: blob, headers: { 'content-type': blob.type } })).key;
+    makeThumb(file, key).catch(() => {}); // মোবাইলে দ্রুত দেখানোর জন্য ছোট কপি
+    return key;
+  }
+  async function makeThumb(fileOrBlob, key) {
+    const small = await compress(fileOrBlob, 600, 0.78);
+    await api('upload', { method: 'POST', body: small, headers: { 'content-type': small.type, 'x-thumb-for': key } });
+  }
+  // আগের ছবিগুলোর ছোট কপি একবারে বানানো
+  async function backfillThumbs(btn) {
+    const keys = new Set();
+    try {
+      (await api('products')).forEach(p => (p.images || []).forEach(k => keys.add(k)));
+      (await api('gallery')).forEach(g => keys.add(g.image));
+      (await api('fabrics')).forEach(f => f.image && keys.add(f.image));
+    } catch (e) { return fail(e); }
+    const list = [...keys].filter(Boolean);
+    let done = 0;
+    for (const k of list) {
+      btn.textContent = `Making small copies… ${done}/${list.length}`;
+      try {
+        const r = await fetch('/img/' + k.replace(/\.(webp|jpg|png)$/, '-sm.webp'), { method: 'HEAD' });
+        if (!r.ok) { const blob = await (await fetch('/img/' + k)).blob(); await makeThumb(blob, k); }
+      } catch (e) { /* skip */ }
+      done++;
+    }
+    btn.textContent = `Done: ${list.length} photos ready for fast loading`;
   }
 
   // ---------- login ----------
@@ -828,9 +854,10 @@
   async function viewProducts() {
     const [, alerts] = await Promise.all([loadCatalog(), api('stock-alerts').catch(() => [])]);
     const waiting = code => alerts.filter(a => a.product_code === code).reduce((s, a) => s + a.n, 0);
+    setTimeout(() => { const tb = $('#thumbsBtn'); if (tb) tb.onclick = () => { tb.disabled = true; backfillThumbs(tb); }; }, 0);
     const catName = id => (categories.find(c => c.id === id) || {}).name_en || '—';
     $('#main').innerHTML = `
-      <div class="page-head"><h1>Products <span class="muted">${products.length}</span></h1><a class="btn primary" href="#product/new">Add product</a></div>
+      <div class="page-head"><h1>Products <span class="muted">${products.length}</span></h1><div class="head-tools"><button class="btn ghost sm" id="thumbsBtn" title="Makes small copies of old photos so the website opens faster on phones">Speed up photos</button><a class="btn primary" href="#product/new">Add product</a></div></div>
       ${products.length ? `<div class="plist">${products.map(p => {
         const stock = p.sizes.reduce((a, s) => a + s.stock, 0);
         const out = p.sizes.filter(s => s.stock === 0).length;
@@ -1028,15 +1055,15 @@
   }
 
   // ছবি ব্রাউজারেই ছোট করা হয় (১৬০০px, WebP), যাতে আপলোড দ্রুত হয়
-  async function compress(file, max = 1600) {
+  async function compress(file, max = 1600, q = 0.85) {
     const bmp = await createImageBitmap(file);
     const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
     const c = document.createElement('canvas');
     c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
     c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
     const toBlob = (type, q) => new Promise(r => c.toBlob(r, type, q));
-    let blob = await toBlob('image/webp', 0.85);
-    if (!blob || blob.type !== 'image/webp') blob = await toBlob('image/jpeg', 0.85);
+    let blob = await toBlob('image/webp', q);
+    if (!blob || blob.type !== 'image/webp') blob = await toBlob('image/jpeg', q);
     return blob;
   }
 

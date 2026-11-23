@@ -1039,3 +1039,101 @@ dialog.size-dialog { width: min(480px, 100% - 24px); }
 .install-bar span { flex: 1; font-size: 14px; font-weight: 500; }
 .install-bar .btn { min-height: 40px; padding: 0 16px; }
 .menu-install { margin: 10px 22px 0; padding: 12px; border: 1px solid var(--line); background: var(--silk); color: var(--text); font: inherit; font-size: 15px; cursor: pointer; width: calc(100% - 44px); }
+
+/* ===== v12: mobile fixes and filter sheets ===== */
+/* কোনো কিছু যেন স্ক্রিনের চেয়ে চওড়া না হয় (হলে মোবাইলে পুরো পেজ ছোট হয়ে যায়) */
+html, body { max-width: 100%; overflow-x: clip; }
+.cat-bar, .cat-bar > * { min-width: 0; }
+.mfbar { display: none; }
+@media (max-width: 760px) {
+  .cat-bar .filters { display: none; }
+  .cat-bar { margin-bottom: 0; }
+  .mfbar { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; position: sticky; top: calc(var(--head-h, 64px)); z-index: 15; margin: 4px -20px 10px; padding: 8px 20px; background: color-mix(in srgb, var(--paper) 94%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+  .mf-btn { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--text); font: inherit; font-size: 15px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 10px; }
+  .mf-btn b { background: var(--text); color: var(--paper); font-size: 11px; min-width: 20px; height: 20px; border-radius: 10px; display: inline-grid; place-items: center; }
+}
+dialog.msheet { position: fixed; inset: auto 0 0 0; margin: 0; width: 100%; max-width: 100%; max-height: 86dvh; padding: 0; border: 0; border-radius: 18px 18px 0 0; background: var(--paper); color: var(--text); box-shadow: 0 -10px 40px rgba(0,0,0,.2); }
+dialog.msheet[open] { display: flex; animation: sheetUp .3s cubic-bezier(.2,.7,.2,1) both; }
+dialog.msheet::backdrop { background: rgba(0,0,0,.45); animation: fadeIn .2s ease both; }
+@keyframes sheetUp { from { transform: translateY(100%); } to { transform: none; } }
+.ms-body { display: flex; flex-direction: column; width: 100%; max-height: 86dvh; }
+.ms-head { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 22px 12px 10px 20px; border-bottom: 1px solid var(--line); }
+.ms-head h2 { font-size: 19px; margin: 0; }
+.ms-grab { position: absolute; top: 8px; left: 50%; width: 40px; height: 4px; margin-left: -20px; border-radius: 2px; background: var(--line); }
+.ms-scroll { overflow-y: auto; padding: 6px 20px 12px; flex: 1; overscroll-behavior: contain; }
+.ms-sec { margin: 14px 0 4px; }
+.ms-sec legend { font-weight: 500; margin-bottom: 10px; }
+.ms-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ms-chip input { position: absolute; opacity: 0; pointer-events: none; }
+.ms-chip span { display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; font-size: 14.5px; cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
+.ms-chip i { width: 18px; height: 18px; border-radius: 50%; background: var(--sw); box-shadow: inset 0 0 0 1px rgba(0,0,0,.18); }
+.ms-chip input:checked + span { background: var(--text); color: var(--paper); border-color: var(--text); }
+.ms-chip input:focus-visible + span { outline: 2px solid var(--orange); outline-offset: 2px; }
+.ms-toggle { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 6px; padding: 12px 0; border-top: 1px solid var(--line); font-weight: 500; cursor: pointer; }
+.ms-toggle input { width: 22px; height: 22px; accent-color: var(--text); }
+.ms-foot { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; padding: 12px 20px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--paper); }
+.ms-foot .btn { min-height: 50px; }
+.ms-list { padding: 6px 20px calc(16px + env(safe-area-inset-bottom)); }
+.ms-row { display: flex; align-items: center; justify-content: space-between; min-height: 54px; border-bottom: 1px solid var(--line); font-size: 16px; cursor: pointer; }
+.ms-row input { width: 20px; height: 20px; accent-color: var(--text); }
+body.sheet-open { overflow: hidden; }
+@media (prefers-reduced-motion: reduce) { dialog.msheet[open] { animation: none; } }
+.ms-foot .btn { white-space: nowrap; padding: 0 12px; }
+/* মোবাইলে দ্রুত-কার্ট উইন্ডোও নিচ থেকে উঠে আসে */
+@media (max-width: 640px) {
+  dialog.quick-dialog, dialog.size-dialog { position: fixed; inset: auto 0 0 0; margin: 0; width: 100%; max-width: 100%; max-height: 90dvh; border-radius: 18px 18px 0 0; }
+  dialog[open].quick-dialog, dialog[open].size-dialog { animation: sheetUp .3s cubic-bezier(.2,.7,.2,1) both; }
+  .qk-media { aspect-ratio: 16 / 9; }
+  .qk-info { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+}
+
+/* ===== v12: bottom nav, swipe gallery, WhatsApp order, mobile checkout ===== */
+.bnav { display: none; }
+@media (max-width: 760px) {
+  :root { --bnav-h: calc(62px + env(safe-area-inset-bottom)); }
+  body { padding-bottom: var(--bnav-h); }
+  .bnav { display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 38; height: var(--bnav-h); padding-bottom: env(safe-area-inset-bottom);
+    background: color-mix(in srgb, var(--paper) 96%, transparent); backdrop-filter: saturate(1.4) blur(12px); border-top: 1px solid var(--line); }
+  .bnav a, .bnav button { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 11.5px; text-decoration: none; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .bnav svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; stroke-linecap: round; transition: transform .2s; }
+  .bnav [aria-current="page"] { color: var(--text); font-weight: 500; }
+  .bnav [aria-current="page"] svg { fill: currentColor; fill-opacity: .12; }
+  .bnav a:active svg, .bnav button:active svg { transform: scale(.88); }
+  .bnav b { position: absolute; top: 6px; left: 50%; margin-left: 6px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--orange); color: #1A1A1A; font-size: 10.5px; font-weight: 600; display: grid; place-items: center; }
+  .chat-fab { bottom: calc(var(--bnav-h) + 12px); width: 50px; height: 50px; }
+  body.sbar .chat-fab { bottom: calc(var(--bnav-h) + 76px); }
+  .to-top { bottom: calc(var(--bnav-h) + 12px); }
+  .sticky-buy { bottom: var(--bnav-h); padding-bottom: 10px; }
+  .install-bar { bottom: calc(var(--bnav-h) + 10px); }
+  .toast { bottom: calc(var(--bnav-h) + 16px); }
+  .chat-panel { height: calc(100dvh - var(--bnav-h)); bottom: var(--bnav-h); }
+  .head-right #wishLink { display: none; }
+}
+
+/* product photos: swipe on phones */
+.pswipe { display: none; }
+@media (max-width: 760px) {
+  .gallery.has-swipe { display: none; }
+  .pswipe { display: block; position: relative; margin: 0 -20px 4px; }
+  .ps-track { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .ps-track::-webkit-scrollbar { display: none; }
+  .ps-slide { flex: 0 0 100%; scroll-snap-align: center; aspect-ratio: 4 / 5; border: 0; padding: 0; background: var(--silk); }
+  .ps-slide img { width: 100%; height: 100%; object-fit: cover; }
+  .ps-dots { position: absolute; left: 0; right: 0; bottom: 12px; display: flex; justify-content: center; gap: 6px; pointer-events: none; }
+  .ps-dots i { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,.6); box-shadow: 0 0 0 1px rgba(0,0,0,.15); transition: width .25s, background .25s; }
+  .ps-dots i.on { width: 20px; border-radius: 4px; background: #fff; }
+  .ps-count { position: absolute; top: 12px; right: 14px; background: rgba(0,0,0,.45); color: #fff; font-size: 12px; padding: 3px 9px; border-radius: 999px; }
+}
+
+/* WhatsApp order */
+.btn-wa { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 10px; background: #1F8F4E; border-color: #1F8F4E; color: #fff; }
+.btn-wa:hover { background: #18733F; border-color: #18733F; color: #fff; }
+
+/* checkout: full screen on phones */
+@media (max-width: 640px) {
+  dialog.checkout-dialog { width: 100%; max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; }
+  dialog[open].checkout-dialog { animation: sheetUp .3s cubic-bezier(.2,.7,.2,1) both; }
+  .checkout-dialog .field input, .checkout-dialog .field textarea { font-size: 16px; min-height: 48px; }
+  .checkout-dialog [type=submit] { position: sticky; bottom: 0; min-height: 54px; box-shadow: 0 -8px 16px var(--paper); }
+}
+.saved-note { margin: 0 0 10px; padding: 8px 12px; background: var(--silk); border-radius: 6px; }

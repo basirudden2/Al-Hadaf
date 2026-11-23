@@ -2179,7 +2179,8 @@
               <label class="field"><span>How it reaches the customer</span><select name="delivery_mode"><option value="handover">Customer took it now</option><option value="courier">Send by courier</option></select></label></div>
             <div id="addrBox" hidden><label class="field"><span>Address</span><textarea name="address" rows="2"></textarea></label>
               <div class="g2"><label class="field"><span>Area</span><select name="area"><option value="inside">Inside Dhaka</option><option value="outside">Outside Dhaka</option></select></label>
-              <label class="field"><span>Delivery charge</span><input type="number" name="delivery" min="0" value="0"></label></div></div>
+              <label class="field"><span>Delivery charge</span><input type="number" name="delivery" min="0" value="0"></label></div>
+              <label class="field"><span>The money not paid now will be</span><select name="due_from"><option value="courier">Collected by the courier (cash on delivery)</option><option value="customer">Paid by the customer later (baki)</option></select></label></div>
             <div class="g2"><label class="field"><span>Date <small>change it to enter an old sale</small></span><input type="date" name="day" value="${todayBD()}"></label>
               <label class="field"><span>Sold by</span><input name="sold_by" value="${esc(ME.user.name)}"></label></div>
             <label class="field"><span>Note <small>optional</small></span><input name="note"></label></section>
@@ -2192,7 +2193,7 @@
           <div class="pay-seg" role="group" aria-label="Payment">${[['full', 'Paid in full'], ['part', 'Part paid'], ['none', 'Not paid (due)']].map(([k, l], i) => `<button type="button" data-ps="${k}" aria-pressed="${i === 0}">${l}</button>`).join('')}</div>
           <div id="pays"></div>
           <button type="button" class="text-btn" id="addPay">+ Split payment (cash + bKash…)</button>
-          <p class="row"><span>Due (baki)</span><b id="sDue">৳ 0</b></p>
+          <p class="row"><span id="sDueL">Due (baki)</span><b id="sDue">৳ 0</b></p>
           <p class="err" id="sErr" hidden></p>
           <button class="btn primary block" type="submit" id="sSave">Save sale</button>
           <p class="muted small">Leave the amount lower than the total if the customer will pay the rest later.</p>
@@ -2219,6 +2220,7 @@
       const paid = st.payments.reduce((s2, p) => s2 + (Number(p.amount) || 0), 0);
       $('#sSub').textContent = money(t.sub); $('#sTot').textContent = money(t.total); $('#sDue').textContent = money(Math.max(0, t.total - paid));
       $('#sDue').className = t.total - paid > 0 ? 'down' : '';
+      $('#sDueL').textContent = f.delivery_mode.value === 'courier' && f.due_from.value === 'courier' ? 'Courier collects (COD)' : 'Due (baki)';
     };
     const plist = q => {
       q = q.trim().toLowerCase();
@@ -2251,6 +2253,7 @@
     $('#addPay').onclick = () => { st.payTouched = true; st.payments.push({ account_id: (SM.accounts.find(a => a.kind === 'bkash') || SM.accounts[0]).id, amount: '' }); drawPays(); };
     f.discount.oninput = sync; f.delivery.oninput = sync;
     f.delivery_mode.onchange = () => { $('#addrBox').hidden = f.delivery_mode.value !== 'courier'; sync(); };
+    f.due_from.onchange = sync;
     f.phone.oninput = () => { const ph = f.phone.value.replace(/\D/g, '').slice(-11), c = custList.find(x => x.phone === ph);
       $('#custHint').innerHTML = c ? `Returning customer: <b>${esc(c.name)}</b> · bought ${c.orders - c.cancelled} times · spent ${money(c.spent)}${c.due ? ` · <b class="down">due ${money(c.due)}</b>` : ''}` : (ph.length === 11 ? 'New customer' : '');
       if (c && !f.name.value) f.name.value = c.name; if (c && c.address && !f.address.value) f.address.value = c.address; };

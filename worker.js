@@ -2187,6 +2187,8 @@ async function createSale(req, env, user, ctx) {
   const D = env.DB, b = await readJson(req) || {};
   const channel = CHANNELS[b.channel] && b.channel !== 'website' ? b.channel : 'shop';
   const mode = b.delivery_mode === 'courier' ? 'courier' : 'handover';
+  // কুরিয়ারে পাঠালেও বাকি টাকা কাস্টমার পরে নিজে দিলে সেটা "কাস্টমারের বাকি"; কুরিয়ার তুললে COD
+  const custDue = mode === 'handover' || b.due_from === 'customer';
   const name = str(b.name, 100) || 'Walk-in customer', phone = str(b.phone, 20).replace(/[\s-]/g, '');
   if (phone && !/^(?:\+?88)?01[3-9]\d{8}$/.test(phone)) return bad('Mobile number looks wrong. Leave it empty for a walk-in customer.');
   if (mode === 'courier' && (!phone || str(b.address, 500).length < 5)) return bad('For courier delivery, add the mobile number and address.');
@@ -2237,7 +2239,7 @@ async function createSale(req, env, user, ctx) {
   const createdUtc = new Date(Date.parse(created.replace(' ', 'T') + 'Z') - 6 * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
   await D.prepare(`INSERT INTO orders (order_no, created_at, name, phone, address, area, payment, trx, note, items, subtotal, delivery, total, status, lang, discount, channel, delivery_mode, paid_amount, sold_by)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'en',?,?,?,?,?)`).bind(orderNo, createdUtc, name, phone, str(b.address, 500), b.area === 'outside' ? 'outside' : 'inside', payment, str(b.trx, 40), str(b.note, 500),
-    JSON.stringify(lines), subtotal, delivery, total, mode === 'handover' ? 'delivered' : 'confirmed', discount, channel, mode, paid, str(b.sold_by, 60) || user.name).run();
+    JSON.stringify(lines), subtotal, delivery, total, mode === 'handover' ? 'delivered' : 'confirmed', discount, channel, custDue ? 'handover' : 'courier', paid, str(b.sold_by, 60) || user.name).run();
   // পাওয়া টাকা হিসাবে জমা (লাভে দুবার গোনা হয় না, কারণ বিক্রি অর্ডার থেকেই গোনা হয়)
   const salesCat = await D.prepare("SELECT id FROM acc_categories WHERE type = 'in' AND kind = 'revenue' ORDER BY sort, id LIMIT 1").first();
   if (pays.length) await D.batch(pays.map(p => D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, ref, note, source, created_by) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, 'order', ?)`)
@@ -2314,8 +2316,8 @@ async function editOrder(req, env, id, user) {
       ops.push(D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, ref, note, source, created_by) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, 'order', ?)`)
         .bind(bdNow().toISOString().slice(0, 10), cat ? cat.id : null, newPaid - oldPaid, acc.id, o.name || '', o.order_no, 'Payment received ' + o.order_no, user.name));
     }
-    if (newPaid !== oldPaid) {
-      // বাকি হিসাবের জন্য এটাকে হাতে হাতে বিক্রি ধরা হয়
+    if (newPaid !== oldPaid || o.delivery_mode !== 'handover') {
+      // বাকি কাস্টমার নিজে দেবে (কুরিয়ার না), তাই এটাকে "কাস্টমারের বাকি" ধরা হয়
       ops.push(D.prepare("UPDATE orders SET paid_amount = ?, delivery_mode = 'handover' WHERE id = ?").bind(newPaid, id));
       // কুরিয়ারের পাওনা হিসেবে আগে বসে থাকলে সেটা সরানো, নইলে দুবার গোনা হবে
       if (o.delivery_mode !== 'handover') ops.push(D.prepare("DELETE FROM acc_entries WHERE order_no = ? AND source = 'order'").bind(o.order_no));

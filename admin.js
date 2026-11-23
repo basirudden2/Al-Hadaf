@@ -2220,7 +2220,7 @@
       <form id="saleF" class="sale-grid" autocomplete="off">
         <div class="sale-left">
           <section class="card"><h2>Items</h2>
-            <div class="pick"><input type="search" id="pSearch" placeholder="Search product name, code or colour"><div id="pList" class="plist"></div></div>
+            <div class="pick"><input type="search" id="pSearch" placeholder="Search product name, code or colour"><div id="pList" class="spick"></div></div>
             <div id="lines"></div>
             <button type="button" class="text-btn" id="addOther">+ Add an item that is not in the shop list</button></section>
           <section class="card"><h2>Customer</h2><div class="g2">

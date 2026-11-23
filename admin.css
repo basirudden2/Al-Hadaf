@@ -622,7 +622,7 @@ tr.off td { opacity: .5; }
 .btn.block { width: 100%; justify-content: center; margin-top: 10px; }
 .pick { margin-bottom: 12px; }
 .pick input { width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
-.plist { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; margin-top: 8px; max-height: 300px; overflow-y: auto; }
+.spick { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; margin-top: 8px; max-height: 300px; overflow-y: auto; }
 .pitem { display: grid; grid-template-columns: 44px 1fr; gap: 10px; align-items: center; text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 6px; padding: 6px; cursor: pointer; font: inherit; }
 .pitem:hover { border-color: var(--text); }
 .pi-img { width: 44px; height: 54px; border-radius: 4px; background: var(--c); overflow: hidden; } .pi-img img { width: 100%; height: 100%; object-fit: cover; }

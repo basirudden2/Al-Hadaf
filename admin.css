@@ -669,3 +669,32 @@ dialog.adlg.wide { width: min(900px, 100% - 24px); }
 .tdot { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; background: #fff; color: #1A1A1A; font-size: 12px; font-weight: 700; display: grid; place-items: center; box-shadow: 0 0 0 3px rgba(0,0,0,.35); pointer-events: none; }
 .tag-list { padding-left: 20px; } .tag-list li { margin-bottom: 8px; } .tag-list li > input { width: calc(100% - 44px); padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
 @media (max-width: 800px) { .tag-grid { grid-template-columns: 1fr; } }
+
+/* ===== v13 ===== */
+.glance { grid-template-columns: 1fr 1fr 1.3fr; }
+.glance .kpi-link { color: inherit; text-decoration: none; display: block; }
+.glance .kpi-link:hover { border-color: var(--text); }
+@media (max-width: 1000px) { .glance { grid-template-columns: 1fr; } }
+.osel { display: flex; align-items: center; padding-right: 6px; }
+.osel input { width: 18px; height: 18px; accent-color: var(--text); }
+.order summary { align-items: center; }
+.bulkbar { position: sticky; bottom: 12px; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 14px; background: #1A1A1A; color: #fff; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+.bulkbar .btn.ghost { background: #fff; }
+.bulkbar .text-btn { color: #ccc; }
+.tbl-scroll { overflow-x: auto; }
+.cc-in { width: 84px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; font: inherit; text-align: right; }
+.cc-set { margin-left: 4px; color: var(--blue); }
+.rv-photos { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.rv-photos span { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.rv-photos img { width: 72px; height: 90px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line); }
+/* চেকবক্স যোগ হওয়ায় অর্ডারের সারির কলাম */
+.order summary { grid-template-columns: 26px 1.1fr 1.3fr 1fr auto auto; }
+.order summary .duetag { margin-left: 0; }
+@media (max-width: 760px) {
+  .order summary { grid-template-columns: 26px 1fr auto; }
+  .order summary .osel { grid-row: 1 / span 2; }
+  .order summary .o-cust { grid-column: 2; }
+  .order summary .o-total { grid-column: 3; grid-row: 1; }
+  .order summary .badge { grid-column: 3; grid-row: 2; justify-self: end; }
+  .order summary .duetag { grid-column: 2; }
+}

@@ -13,7 +13,15 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export default {
   // প্রতিদিন রাতে Telegram-এ দিনের হিসাব (wrangler.jsonc-এর triggers.crons)
   async scheduled(event, env, ctx) {
-    ctx.waitUntil((async () => { await ensureSchema(env); await dailySummary(env, false); })());
+    ctx.waitUntil((async () => {
+      await ensureSchema(env);
+      const now = bdNow(), hr = now.getUTCHours();
+      try { await abandonedReminders(env); } catch (e) { console.error('reminders', e); }
+      if (hr === 22) {
+        try { await dailySummary(env, false); } catch (e) { console.error('summary', e); }
+        if (now.getUTCDay() === 5) { try { await sendBackup(env); } catch (e) { console.error('backup', e); } }
+      }
+    })());
   },
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
@@ -92,6 +100,9 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_acc_day ON acc_entries(day)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_acc_order ON acc_entries(order_no) WHERE order_no IS NOT NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_acc_import ON acc_entries(import_id) WHERE import_id IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS stock_counts (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, fabric INTEGER DEFAULT 0, goods INTEGER DEFAULT 0, other INTEGER DEFAULT 0,
+    note TEXT DEFAULT '', created_by TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS upload_log (ip TEXT NOT NULL, day TEXT NOT NULL, n INTEGER DEFAULT 0, PRIMARY KEY (ip, day))`,
   `CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, category TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS banners (id INTEGER PRIMARY KEY AUTOINCREMENT, image TEXT NOT NULL, title_en TEXT DEFAULT '', title_bn TEXT DEFAULT '', text_en TEXT DEFAULT '', text_bn TEXT DEFAULT '',
     btn_en TEXT DEFAULT '', btn_bn TEXT DEFAULT '', link TEXT DEFAULT '', sort INTEGER DEFAULT 0, active INTEGER DEFAULT 1)`,
@@ -134,13 +145,16 @@ const MIGRATIONS = [
   `ALTER TABLE customer_notes ADD COLUMN follow_note TEXT DEFAULT ''`,
   `ALTER TABLE gallery ADD COLUMN album TEXT DEFAULT ''`,
   `ALTER TABLE gallery ADD COLUMN featured INTEGER DEFAULT 0`,
-  `ALTER TABLE gallery ADD COLUMN spots TEXT DEFAULT '[]'`
+  `ALTER TABLE gallery ADD COLUMN spots TEXT DEFAULT '[]'`,
+  `ALTER TABLE orders ADD COLUMN courier_cost INTEGER`,
+  `ALTER TABLE abandoned ADD COLUMN reminded_at TEXT DEFAULT ''`,
+  `ALTER TABLE reviews ADD COLUMN photos TEXT DEFAULT '[]'`
 ];
 
 const DEFAULT_SHOP = {
   phone: '01700000000', whatsapp: '8801700000000', email: '', bkash: '01700000000',
   facebook: '', instagram: '', messenger: '', youtube: '', tiktok: '', fb_pixel: '',
-  sms_new: '1', sms_confirmed: '1', sms_shipped: '1', sms_delivered: '', bundle_min: 0, bundle_pct: 0, free_ship_over: 0,
+  sms_new: '1', sms_confirmed: '1', sms_shipped: '1', sms_delivered: '', sms_abandoned: '', bundle_min: 0, bundle_pct: 0, free_ship_over: 0,
   address_en: 'Dhaka, Bangladesh', address_bn: 'ঢাকা, বাংলাদেশ',
   delivery_inside: 70, delivery_outside: 130,
   announce_en: 'Cash on delivery all over Bangladesh. Easy size exchange within 7 days.',
@@ -273,7 +287,7 @@ const ROLES = {
 const AREAS = {
   sales: ['orders', 'courier', 'chats', 'abandoned', 'customers', 'customer', 'fraud', 'stock-alerts', 'sales', 'due'],
   catalog: ['products', 'categories', 'custom', 'fabrics', 'gallery', 'gallery-opts', 'upload', 'banners', 'reviews', 'coupons', 'sms', 'settings'],
-  money: ['stats', 'report', 'finance', 'expenses', 'acc', 'goals', 'summary'],
+  money: ['stats', 'report', 'finance', 'expenses', 'acc', 'goals', 'summary', 'courier-report', 'courier-cost', 'backup'],
   people: ['users', 'audit']
 };
 function can(user, res, method) {
@@ -341,6 +355,7 @@ async function api(req, env, url, ctx) {
   if (p === '/api/track' && m === 'GET') return trackOrder(env, url);
   if (p === '/api/coupon' && m === 'GET') return checkCoupon(env, url);
   if (p === '/api/reviews' && m === 'POST') return submitReview(req, env, ctx);
+  if (p === '/api/reviews/photo' && m === 'POST') return reviewPhoto(req, env);
   if (p === '/api/abandoned' && m === 'POST') return saveAbandoned(req, env);
   if (p === '/api/stock-alert' && m === 'POST') return saveStockAlert(req, env);
   if (p === '/api/account/otp' && m === 'POST') return sendOtp(req, env, ctx);
@@ -498,6 +513,23 @@ async function adminApi(req, env, path, m, url, ctx, user) {
     if (!sub && m === 'POST') return createSale(req, env, user, ctx);
   }
   if (res === 'due' && m === 'POST' && id) return collectDue(req, env, id, user);
+  if (res === 'courier-report' && m === 'GET') return courierReport(env, url);
+  if (res === 'courier-cost' && m === 'PUT' && id) {
+    const b = await readJson(req) || {};
+    const v = b.courier_cost === '' || b.courier_cost == null ? null : Math.max(0, int(b.courier_cost));
+    const o = await env.DB.prepare('SELECT order_no, courier_cost FROM orders WHERE id = ?').bind(id).first();
+    if (!o) return bad('Order not found.', 404);
+    await env.DB.prepare('UPDATE orders SET courier_cost = ? WHERE id = ?').bind(v, id).run();
+    await audit(env, user, 'EDIT', 'courier', o.order_no, `Courier cost ${o.courier_cost ?? 'default'} → ${v ?? 'default'}`);
+    return json({ ok: true });
+  }
+  if (res === 'backup' && m === 'GET') {
+    if (!['super', 'admin'].includes(user.role)) return bad('Only an admin can download a backup.', 403);
+    const data = await buildBackup(env);
+    await audit(env, user, 'ADD', 'backup', '', 'Downloaded full backup');
+    return new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json', 'content-disposition': `attachment; filename="al-hadaf-backup-${bdNow().toISOString().slice(0, 10)}.json"` } });
+  }
+  if (res === 'backup' && m === 'POST') { const r = await sendBackup(env); return r.sent ? json({ ok: true }) : bad(r.reason); }
   if (res === 'goals') {
     if (m === 'GET') return json(await getGoals(env));
     if (m === 'PUT') { const b = await readJson(req) || {}; const v = { month_target: Math.max(0, int(b.month_target)) };
@@ -530,11 +562,12 @@ async function getStore(env) {
     getCustom(env),
     D.prepare('SELECT * FROM fabrics WHERE active = 1 AND (stock IS NULL OR stock >= per_thobe) ORDER BY sort, id').all(),
     D.prepare('SELECT * FROM gallery ORDER BY sort, id DESC LIMIT 200').all(),
-    D.prepare("SELECT product_code, name, rating, body, verified, created_at FROM reviews WHERE status = 'approved' ORDER BY id DESC LIMIT 800").all(),
+    D.prepare("SELECT product_code, name, rating, body, verified, created_at, photos FROM reviews WHERE status = 'approved' ORDER BY id DESC LIMIT 800").all(),
     D.prepare('SELECT * FROM banners WHERE active = 1 ORDER BY sort, id').all()
   ]);
   const reviews = {};
-  for (const r of revs.results) (reviews[r.product_code] = reviews[r.product_code] || []).push({ name: r.name, rating: r.rating, body: r.body, verified: !!r.verified, date: r.created_at.slice(0, 10) });
+  for (const r of revs.results) (reviews[r.product_code] = reviews[r.product_code] || []).push({ name: r.name, rating: r.rating, body: r.body, verified: !!r.verified, date: r.created_at.slice(0, 10),
+    photos: (() => { try { return JSON.parse(r.photos || '[]').map(k => '/img/' + k); } catch (e) { return []; } })() });
   const catById = Object.fromEntries(cats.results.map(c => [c.id, c]));
   const products = prods.results.map(p => {
     const fe = lines(p.features_en), fb = lines(p.features_bn);
@@ -1029,7 +1062,8 @@ async function submitReview(req, env, ctx) {
     const o = await env.DB.prepare(`SELECT COUNT(*) AS n FROM orders WHERE status = 'delivered' AND substr(replace(phone, '+', ''), -11) = ? AND items LIKE ?`).bind(phone, `%"code":"${code}"%`).first();
     verified = o.n ? 1 : 0;
   }
-  await env.DB.prepare('INSERT INTO reviews (product_code, name, phone, rating, body, verified, ip) VALUES (?,?,?,?,?,?,?)').bind(code, name, phone, rating, body, verified, ip).run();
+  const photos = (Array.isArray(b.photos) ? b.photos : []).filter(k => /^r-[a-z0-9-]+\.(webp|jpg|png)$/.test(k)).slice(0, 3);
+  await env.DB.prepare('INSERT INTO reviews (product_code, name, phone, rating, body, verified, ip, photos) VALUES (?,?,?,?,?,?,?,?)').bind(code, name, phone, rating, body, verified, ip, JSON.stringify(photos)).run();
   notify(env, ctx, `⭐ New ${rating}-star review on ${code} from ${name}\n${body}`);
   return json({ ok: true });
 }
@@ -1651,7 +1685,7 @@ async function profitReport(env, from, to, basis, quick) {
   const BD = "date(created_at, '+6 hours')";
   const statusSql = basis === 'delivered' ? "status = 'delivered'" : "status != 'cancelled'";
   const [orders, prods, fabs, fin, exp] = await Promise.all([
-    D.prepare(`SELECT ${BD} AS day, area, payment, paid, status, items, subtotal, delivery, discount, bundle_off, coupon, total FROM orders WHERE ${statusSql} AND ${BD} BETWEEN ? AND ? LIMIT 10000`).bind(from, to).all(),
+    D.prepare(`SELECT ${BD} AS day, area, payment, paid, status, items, subtotal, delivery, discount, bundle_off, coupon, total, delivery_mode, courier_cost FROM orders WHERE ${statusSql} AND ${BD} BETWEEN ? AND ? LIMIT 10000`).bind(from, to).all(),
     D.prepare('SELECT code, name_en, cost FROM products').all(),
     D.prepare('SELECT id, cost_per_gaj, per_thobe FROM fabrics').all(),
     getFinance(env),
@@ -1679,8 +1713,8 @@ async function profitReport(env, from, to, basis, quick) {
       bp.qty += l.qty; bp.revenue += l.price * l.qty; bp.cost += (c || 0) * l.qty; if (c == null) bp.missing = true;
       cost += (c || 0) * l.qty; t.pieces += l.qty;
     }
-    const courier = o.area === 'outside' ? fin.courier_outside : fin.courier_inside;
-    const cod = o.payment === 'cod' ? Math.round(o.total * fin.cod_fee_pct / 100) : 0;
+    const courier = courierCostOf(o, fin);
+    const cod = o.payment === 'cod' && o.delivery_mode !== 'handover' && !o.paid ? Math.round(o.total * fin.cod_fee_pct / 100) : 0;
     t.orders++; t.revenue += o.total; t.deliveryCharged += o.delivery; t.discounts += (o.discount || 0) + (o.bundle_off || 0);
     t.goodsCost += Math.round(cost); t.courierCost += courier; t.codFee += cod;
     const d = days[o.day] = days[o.day] || { day: o.day, revenue: 0, profit: 0, orders: 0 };
@@ -1690,10 +1724,17 @@ async function profitReport(env, from, to, basis, quick) {
   const byCat = {};
   exp.results.forEach(e => { byCat[e.category] = (byCat[e.category] || 0) + e.amount; });
   t.otherIncome = other.v; t.revenue += other.v;
+  // ফেরত আসা পার্সেলেও কুরিয়ারকে টাকা দিতে হয়
+  const ret = (await D.prepare(`SELECT area, delivery_mode, courier_cost FROM orders WHERE status = 'cancelled' AND cancel_type = 'returned' AND delivery_mode != 'handover' AND ${BD} BETWEEN ? AND ?`).bind(from, to).all()).results;
+  t.returnCourier = ret.reduce((sum, o) => sum + courierCostOf(o, fin), 0); t.courierCost += t.returnCourier;
+  // মাসের শেষে স্টক গোনা থাকলে মালের খরচ সেখান থেকে
+  const cg = await cogsByCount(env, from, to);
+  t.cogsMethod = 'cost';
+  if (cg) { t.cogsMethod = 'count'; t.goodsCostByPrices = t.goodsCost; t.goodsCost = cg.cogs; t.cogsInfo = cg; }
   const gross = t.revenue - t.goodsCost - t.courierCost - t.codFee;
   const net = gross - expTotal;
   const out = { from, to, basis: basis === 'delivered' ? 'delivered' : 'all', ...t, gross, expenses: expTotal, net,
-    margin: t.revenue ? Math.round(net / t.revenue * 1000) / 10 : 0, missingCost: [...missing] };
+    margin: t.revenue ? Math.round(net / t.revenue * 1000) / 10 : 0, missingCost: t.cogsMethod === 'count' ? [] : [...missing] };
   if (quick) return out;
   return { ...out, finance: fin,
     daily: Object.values(days).map(d => ({ ...d, profit: Math.round(d.profit) })).sort((a, b) => a.day < b.day ? -1 : 1),
@@ -1838,7 +1879,7 @@ async function accSettings(env) {
   const v = row ? JSON.parse(row.value) : {};
   // old_until: এই তারিখ পর্যন্ত আগের Google Sheet-এর নিয়ম (বিক্রি − সব খরচ); পরে নতুন নিয়ম। সেট না থাকলে ২২ নভেম্বর ২০২৬।
   return { profit_rule: ['equal', 'capital', 'custom'].includes(v.profit_rule) ? v.profit_rule : 'equal', profit_basis: v.profit_basis === 'all' ? 'all' : 'delivered', start_day: v.start_day || '',
-    old_until: 'old_until' in v ? v.old_until : '2026-11-22' };
+    old_until: 'old_until' in v ? v.old_until : '2026-11-22', cogs_method: v.cogs_method === 'count' ? 'count' : 'cost' };
 }
 const nextDay = d => new Date(Date.parse(d + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10);
 // আগের নিয়ম, ঠিক Google Sheet-এর মতো: বিক্রি ও অন্য আয় − সব খরচ (কাপড়, মেশিন সহ; পার্টনারকে দেওয়া লাভ আর ঋণ শোধ বাদে)
@@ -1892,13 +1933,30 @@ async function accApi(req, env, parts, m, url, user) {
     }
   }
   if (sub === 'partner' && m === 'GET' && id) return partnerStatement(env, id);
+  if (sub === 'stock') {
+    if (m === 'GET') return stockCounts(env);
+    if (m === 'DELETE' && id) {
+      if (!['super', 'admin'].includes(user.role)) return bad('Only an admin can delete.', 403);
+      await D.prepare('DELETE FROM stock_counts WHERE id = ?').bind(id).run(); await audit(env, user, 'DELETE', 'acc', 'stock-count', 'Deleted stock count #' + id); return json({ ok: true });
+    }
+    if (m === 'POST' || m === 'PUT') {
+      const b = await readJson(req) || {};
+      const day = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') ? b.day : '';
+      if (!day) return bad('Choose the date you counted.');
+      const v = [day, Math.max(0, int(b.fabric)), Math.max(0, int(b.goods)), Math.max(0, int(b.other)), str(b.note, 200)];
+      if (id) await D.prepare('UPDATE stock_counts SET day=?, fabric=?, goods=?, other=?, note=? WHERE id=?').bind(...v, id).run();
+      else await D.prepare('INSERT INTO stock_counts (day, fabric, goods, other, note, created_by) VALUES (?,?,?,?,?,?)').bind(...v, user.name).run();
+      await audit(env, user, id ? 'EDIT' : 'ADD', 'acc', 'stock-count', `${day}: fabric ${v[1]}, thobes ${v[2]}, other ${v[3]}`);
+      return json({ ok: true });
+    }
+  }
   if (sub === 'settle' && m === 'POST') return courierSettle(req, env, user);
   // নিচের সব শুধু সুপার অ্যাডমিন
   if (m !== 'GET') { const no = superOnly(); if (no) return no; }
   if (sub === 'settings' && m === 'PUT') {
     const b = await readJson(req) || {}, old = await accSettings(env);
     const v = { profit_rule: ['equal', 'capital', 'custom'].includes(b.profit_rule) ? b.profit_rule : old.profit_rule, profit_basis: b.profit_basis === 'all' ? 'all' : 'delivered', start_day: /^\d{4}-\d{2}-\d{2}$/.test(b.start_day || '') ? b.start_day : '',
-      old_until: /^\d{4}-\d{2}-\d{2}$/.test(b.old_until || '') ? b.old_until : '' };
+      old_until: /^\d{4}-\d{2}-\d{2}$/.test(b.old_until || '') ? b.old_until : '', cogs_method: b.cogs_method === 'count' ? 'count' : 'cost' };
     await D.prepare("INSERT INTO settings (key, value) VALUES ('acc', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(JSON.stringify(v)).run();
     await audit(env, user, 'EDIT', 'acc', 'settings', `Profit rule ${old.profit_rule}→${v.profit_rule}, basis ${v.profit_basis}, old rule until ${v.old_until || 'none'}`);
     return json(v);
@@ -2430,11 +2488,19 @@ async function dashExtras(env) {
     D.prepare("SELECT n.phone, n.follow_up, n.follow_note, (SELECT MAX(name) FROM orders WHERE substr(phone, -11) = n.phone) AS name FROM customer_notes n WHERE n.follow_up != '' AND n.follow_up <= ? ORDER BY n.follow_up LIMIT 20").bind(today).all()
   ]);
   const pctChange = (a, b) => b ? Math.round((a - b) / b * 100) : null;
+  const fin = await getFinance(env);
+  const cRows = (await D.prepare(`SELECT area, delivery, delivery_mode, courier_cost, status FROM orders WHERE delivery_mode != 'handover' AND (status IN ('shipped', 'delivered') OR (status = 'cancelled' AND cancel_type = 'returned')) AND ${BD} BETWEEN ? AND ?`).bind(m0, today).all()).results;
+  const courier = cRows.reduce((t, o) => { const c = courierCostOf(o, fin), ch = o.status === 'cancelled' ? 0 : o.delivery; t.cost += c; t.charged += ch; t.shopPaid += Math.max(0, c - ch); if (o.status !== 'cancelled' && !o.delivery) t.free++; return t; }, { cost: 0, charged: 0, shopPaid: 0, free: 0, n: cRows.length });
+  const sv = await D.prepare('SELECT COALESCE(SUM(s.stock * COALESCE(p.cost, 0)), 0) AS v, COALESCE(SUM(s.stock * p.price), 0) AS retail, COALESCE(SUM(s.stock), 0) AS pcs FROM product_sizes s JOIN products p ON p.id = s.product_id WHERE p.active = 1 AND s.stock > 0').first();
+  const fv = await D.prepare('SELECT COALESCE(SUM(stock * COALESCE(cost_per_gaj, 0)), 0) AS v, COALESCE(SUM(stock), 0) AS gaj FROM fabrics WHERE stock IS NOT NULL').first();
+  const chMonth = (await D.prepare(`SELECT COALESCE(channel, 'website') AS ch, COUNT(*) AS n, COALESCE(SUM(total), 0) AS v FROM orders WHERE status != 'cancelled' AND ${BD} BETWEEN ? AND ? GROUP BY ch ORDER BY v DESC`).bind(m0, today).all()).results;
   return {
     goal: { target: goals.month_target || 0, sold: monthNow.v, daysLeft: daysInMonth - dom, perDay: goals.month_target > monthNow.v ? Math.ceil((goals.month_target - monthNow.v) / Math.max(1, daysInMonth - dom + 1)) : 0 },
     todayChannels: todayCh.results.map(r => ({ ...r, label: CHANNELS[r.ch] || r.ch })),
     mom: { orders: monthNow.n, revenue: monthNow.v, prevOrders: monthPrev.n, prevRevenue: monthPrev.v, ordersPct: pctChange(monthNow.n, monthPrev.n), revenuePct: pctChange(monthNow.v, monthPrev.v) },
-    dueTotal: { n: due.n, v: due.v }, topCustomers: topC.results, followUps: fu.results
+    dueTotal: { n: due.n, v: due.v }, topCustomers: topC.results, followUps: fu.results,
+    courierMonth: courier, stockValue: { goods: Math.round(sv.v), retail: Math.round(sv.retail), pcs: sv.pcs, fabric: Math.round(fv.v), gaj: fv.gaj },
+    channelsMonth: chMonth.map(r => ({ ...r, label: CHANNELS[r.ch] || r.ch }))
   };
 }
 
@@ -2474,4 +2540,128 @@ async function dailySummary(env, manual) {
   const lines = sections.map(sec => sec.filter(Boolean)).filter(sec => sec.length).map(sec => sec.join('\n')).join('\n\n');
   const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text: lines }) });
   return r.ok ? { sent: true } : { sent: false, reason: 'Telegram did not accept the message. Check the token and chat ID.' };
+}
+
+
+// ================= v13: কুরিয়ার খরচ, স্টক গোনা, ব্যাকআপ, রিমাইন্ডার, রিভিউয়ের ছবি =================
+// প্রতিটি পার্সেলে কুরিয়ারকে কত দিতে হয়: আলাদা করে লেখা থাকলে সেটা, নইলে এলাকা অনুযায়ী আপনার সেট করা রেট; দোকানে হাতে দেওয়া হলে ০
+function courierCostOf(o, fin) {
+  if (o.courier_cost != null && o.courier_cost !== '') return Number(o.courier_cost) || 0;
+  if (o.delivery_mode === 'handover') return 0;
+  return o.area === 'outside' ? fin.courier_outside : fin.courier_inside;
+}
+
+async function courierReport(env, url) {
+  const D = env.DB, ok = d => /^\d{4}-\d{2}-\d{2}$/.test(d || ''), BD = "date(created_at, '+6 hours')";
+  const today = bdNow().toISOString().slice(0, 10);
+  const to = ok(url.searchParams.get('to')) ? url.searchParams.get('to') : today;
+  const from = ok(url.searchParams.get('from')) ? url.searchParams.get('from') : to.slice(0, 8) + '01';
+  const [rows, fin, recorded] = await Promise.all([
+    D.prepare(`SELECT id, order_no, ${BD} AS day, name, phone, area, status, cancel_type, delivery, total, coupon, discount, courier_cost, delivery_mode, consignment, COALESCE(channel, 'website') AS channel
+      FROM orders WHERE delivery_mode != 'handover' AND (status IN ('shipped', 'delivered') OR (status = 'cancelled' AND cancel_type = 'returned')) AND ${BD} BETWEEN ? AND ? ORDER BY id DESC LIMIT 5000`).bind(from, to).all(),
+    getFinance(env),
+    D.prepare(`SELECT COALESCE(SUM(e.amount), 0) AS v FROM acc_entries e JOIN acc_categories c ON c.id = e.category_id WHERE c.kind = 'courier' AND e.day BETWEEN ? AND ?`).bind(from, to).first()
+  ]);
+  const shop = await getShop(env);
+  const freeShipCoupons = new Set((await D.prepare("SELECT code FROM coupons WHERE kind = 'free_ship'").all()).results.map(c => c.code));
+  const t = { parcels: 0, delivered: 0, returned: 0, inTransit: 0, cost: 0, charged: 0, shopPaid: 0, freeCount: 0, freeCost: 0, returnCost: 0 };
+  const area = { inside: { n: 0, cost: 0, charged: 0 }, outside: { n: 0, cost: 0, charged: 0 } }, months = {};
+  const list = rows.results.map(o => {
+    const cost = courierCostOf(o, fin), returned = o.status === 'cancelled';
+    // ফ্রি ডেলিভারি কুপনে ডেলিভারি চার্জ লেখা থাকে কিন্তু সমান ছাড় দেওয়া হয়, তাই কাস্টমার আসলে দেয় ০
+    const fsCoupon = o.coupon && freeShipCoupons.has(o.coupon);
+    const charged = returned ? 0 : fsCoupon ? Math.max(0, o.delivery - (o.discount || 0)) : o.delivery;
+    const reason = returned ? 'returned' : charged > 0 ? '' : fsCoupon ? 'coupon' : shop.free_ship_over > 0 && o.channel === 'website' ? 'free_over' : 'free';
+    t.parcels++; t.cost += cost; t.charged += charged;
+    if (returned) { t.returned++; t.returnCost += cost; } else if (o.status === 'delivered') t.delivered++; else t.inTransit++;
+    if (!returned && charged === 0) { t.freeCount++; t.freeCost += cost; }
+    t.shopPaid += Math.max(0, cost - charged);
+    const a = area[o.area === 'outside' ? 'outside' : 'inside']; a.n++; a.cost += cost; a.charged += charged;
+    const mk = o.day.slice(0, 7); months[mk] = months[mk] || { m: mk, cost: 0, charged: 0, n: 0 }; months[mk].cost += cost; months[mk].charged += charged; months[mk].n++;
+    return { ...o, cost, charged, diff: charged - cost, reason, costSet: o.courier_cost != null };
+  });
+  return json({ from, to, ...t, area, months: Object.values(months).sort((a, b) => a.m < b.m ? -1 : 1), list, rates: { inside: fin.courier_inside, outside: fin.courier_outside }, recordedCharges: recorded.v });
+}
+
+// ---------- মাস শেষে স্টক গোনা ----------
+async function stockCounts(env) {
+  const D = env.DB;
+  const [list, goods, fabric] = await Promise.all([
+    D.prepare('SELECT * FROM stock_counts ORDER BY day DESC, id DESC LIMIT 60').all(),
+    D.prepare('SELECT COALESCE(SUM(s.stock * p.cost), 0) AS v, SUM(CASE WHEN p.cost IS NULL AND s.stock > 0 THEN 1 ELSE 0 END) AS missing FROM product_sizes s JOIN products p ON p.id = s.product_id WHERE p.active = 1 AND s.stock > 0').first(),
+    D.prepare('SELECT COALESCE(SUM(stock * cost_per_gaj), 0) AS v, SUM(CASE WHEN cost_per_gaj IS NULL AND stock > 0 THEN 1 ELSE 0 END) AS missing FROM fabrics WHERE stock IS NOT NULL').first()
+  ]);
+  return json({ list: list.results.map(c => ({ ...c, total: c.fabric + c.goods + c.other })), suggest: { goods: Math.round(goods.v), goodsMissing: goods.missing || 0, fabric: Math.round(fabric.v), fabricMissing: fabric.missing || 0 }, settings: await accSettings(env) });
+}
+// মালের খরচ = শুরুর স্টক + এই সময়ে কেনা মাল − শেষের স্টক
+async function cogsByCount(env, from, to) {
+  const s = await accSettings(env);
+  if (s.cogs_method !== 'count') return null;
+  const D = env.DB;
+  const closing = await D.prepare('SELECT * FROM stock_counts WHERE day <= ? ORDER BY day DESC, id DESC LIMIT 1').bind(to).first();
+  if (!closing || closing.day < from) return null;
+  const opening = await D.prepare('SELECT * FROM stock_counts WHERE day < ? ORDER BY day DESC, id DESC LIMIT 1').bind(from).first();
+  const start = opening ? opening.day : '0000-00-00';
+  const bought = await D.prepare(`SELECT COALESCE(SUM(e.amount), 0) AS v FROM acc_entries e JOIN acc_categories c ON c.id = e.category_id WHERE e.type = 'out' AND c.kind = 'stock' AND e.day > ? AND e.day <= ?`).bind(start, closing.day).first();
+  const openV = opening ? opening.fabric + opening.goods + opening.other : 0, closeV = closing.fabric + closing.goods + closing.other;
+  return { cogs: Math.max(0, openV + bought.v - closeV), opening: opening ? { day: opening.day, value: openV } : null, bought: bought.v, closing: { day: closing.day, value: closeV } };
+}
+
+// ---------- ব্যাকআপ ----------
+async function buildBackup(env) {
+  const D = env.DB, tables = ['orders', 'products', 'product_sizes', 'categories', 'settings', 'fabrics', 'gallery', 'banners', 'coupons', 'reviews', 'customer_notes',
+    'acc_accounts', 'acc_categories', 'acc_partners', 'acc_target_log', 'acc_entries', 'stock_counts', 'expenses', 'abandoned', 'profiles', 'stock_alerts', 'chats', 'messages'];
+  const out = { app: 'Al Hadaf', made: new Date().toISOString(), tables: {} };
+  for (const tb of tables) {
+    try { out.tables[tb] = (await D.prepare(`SELECT * FROM ${tb}`).all()).results; } catch (e) { out.tables[tb] = []; }
+  }
+  // গোপন জিনিস ব্যাকআপে রাখা হয় না
+  out.tables.settings = out.tables.settings.filter(r => r.key !== 'pepper');
+  out.tables.users = (await D.prepare('SELECT id, username, name, role, active, last_login, created_at FROM users').all()).results;
+  return out;
+}
+async function sendBackup(env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return { sent: false, reason: 'Telegram is not connected.' };
+  const data = await buildBackup(env), day = bdNow().toISOString().slice(0, 10);
+  const counts = Object.entries(data.tables).filter(([k]) => ['orders', 'products', 'acc_entries', 'customer_notes'].includes(k)).map(([k, v]) => `${k}: ${v.length}`).join(', ');
+  const fd = new FormData();
+  fd.append('chat_id', env.TELEGRAM_CHAT_ID);
+  fd.append('caption', `🗄 Al Hadaf weekly backup ${day}\n${counts}\nKeep this file safe. Photos are not inside, they stay in Cloudflare.`);
+  fd.append('document', new Blob([JSON.stringify(data)], { type: 'application/json' }), `al-hadaf-backup-${day}.json`);
+  const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: 'POST', body: fd });
+  return r.ok ? { sent: true } : { sent: false, reason: 'Telegram did not accept the backup file.' };
+}
+
+// ---------- অসম্পূর্ণ অর্ডারের SMS রিমাইন্ডার (১ ঘণ্টা পর, একবারই) ----------
+async function abandonedReminders(env) {
+  if (!smsReady(env)) return 0;
+  const shop = await getShop(env);
+  if (!shop.sms_abandoned) return 0;
+  const rows = (await env.DB.prepare(`SELECT * FROM abandoned WHERE status = 'open' AND (reminded_at IS NULL OR reminded_at = '')
+    AND updated_at < datetime('now', '-1 hour') AND updated_at > datetime('now', '-24 hours') LIMIT 30`).all()).results;
+  let n = 0;
+  for (const a of rows) {
+    const items = JSON.parse(a.items || '[]').map(i => i.name).slice(0, 2).join(', ');
+    const msg = a.lang === 'bn' ? `আল হাদাফ: ${a.name ? a.name + ', ' : ''}আপনার পছন্দের ${items} এখনো কার্টে আছে। অর্ডার শেষ করতে ওয়েবসাইটে যান বা এই নম্বরে ফোন করুন ${shop.phone}।`
+      : `Al Hadaf: ${a.name ? a.name + ', ' : ''}your ${items} is still in your cart. Finish your order on our website or call ${shop.phone}.`;
+    if (await sendSms(env, a.phone, msg)) n++;
+    await env.DB.prepare('UPDATE abandoned SET reminded_at = CURRENT_TIMESTAMP WHERE id = ?').bind(a.id).run();
+  }
+  return n;
+}
+
+// ---------- রিভিউয়ের ছবি (কাস্টমার আপলোড, দিনে সীমিত) ----------
+async function reviewPhoto(req, env) {
+  const type = (req.headers.get('content-type') || '').split(';')[0];
+  const ext = { 'image/webp': 'webp', 'image/jpeg': 'jpg', 'image/png': 'png' }[type];
+  if (!ext) return bad('Only photos (JPG, PNG, WebP).');
+  const buf = await req.arrayBuffer();
+  if (!buf.byteLength || buf.byteLength > 2.5 * 1024 * 1024) return bad('Photo is too big.');
+  const ip = clientIp(req) || 'x', day = bdNow().toISOString().slice(0, 10);
+  const r = await env.DB.prepare('SELECT n FROM upload_log WHERE ip = ? AND day = ?').bind(ip, day).first();
+  if (r && r.n >= 12) return bad('Too many photos today. Please try tomorrow.', 429);
+  await env.DB.prepare('INSERT INTO upload_log (ip, day, n) VALUES (?,?,1) ON CONFLICT(ip, day) DO UPDATE SET n = n + 1').bind(ip, day).run();
+  const key = `r-${crypto.randomUUID()}.${ext}`;
+  await env.IMAGES.put(key, buf, { metadata: { type } });
+  return json({ key, url: '/img/' + key });
 }

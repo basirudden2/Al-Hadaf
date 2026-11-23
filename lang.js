@@ -378,3 +378,7 @@ Object.assign(STR.bn, { navHome: 'হোম', navShop: 'শপ', navSearch: 'খ
 // ===== v12: নতুন গ্যালারি =====
 Object.assign(STR.en, { galAll: 'All', galProducts: 'Our thobes', shopLook: 'Shop the look', buyThis: 'Buy', galShare: 'Share', galCount: n => `${n} photo${n === 1 ? '' : 's'}`, inThisPhoto: 'In this photo' });
 Object.assign(STR.bn, { galAll: 'সব', galProducts: 'আমাদের জুব্বা', shopLook: 'ছবির জুব্বা কিনুন', buyThis: 'কিনুন', galShare: 'শেয়ার', galCount: n => `${n}টি ছবি`, inThisPhoto: 'এই ছবিতে' });
+
+// ===== v13: রিভিউয়ে ছবি =====
+Object.assign(STR.en, { rvPhotos: 'Add photos (up to 3)', rvPhotoHint: 'Photos of you wearing it help other customers a lot.', rvUploading: 'Uploading photos…' });
+Object.assign(STR.bn, { rvPhotos: 'ছবি দিন (৩টি পর্যন্ত)', rvPhotoHint: 'জুব্বা পরা আপনার ছবি অন্য কাস্টমারদের খুব সাহায্য করে।', rvUploading: 'ছবি আপলোড হচ্ছে…' });

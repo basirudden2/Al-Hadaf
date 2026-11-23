@@ -6,8 +6,8 @@
   "observability": { "enabled": true },
   // Cloudflare Dashboard-এ দেওয়া variable/secret (Telegram, SMS, bKash…) ডেপ্লয়ের সময় মুছবে না
   "keep_vars": true,
-  // প্রতিদিন রাত ১০টায় (বাংলাদেশ সময়) Telegram-এ দিনের হিসাব
-  "triggers": { "crons": ["0 16 * * *"] },
+  // প্রতি ঘণ্টায় একবার চলে: অসম্পূর্ণ অর্ডারের SMS রিমাইন্ডার; রাত ১০টায় Telegram-এ দিনের হিসাব; শুক্রবার রাতে ব্যাকআপ
+  "triggers": { "crons": ["0 * * * *"] },
   "assets": {
     "directory": ".",
     "binding": "ASSETS"

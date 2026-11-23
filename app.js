@@ -451,7 +451,8 @@
         </div>
         <div class="rv-list">${list.map(x => `<article class="rv">
           <div class="rv-meta">${starsHtml(x.rating, 'sm')}<strong>${esc(x.name)}</strong>${x.verified ? `<span class="rv-ver">${t('verified')}</span>` : ''}<time class="muted">${esc(x.date)}</time></div>
-          ${x.body ? `<p>${esc(x.body).replace(/\n/g, '<br>')}</p>` : ''}</article>`).join('')}</div>
+          ${x.body ? `<p>${esc(x.body).replace(/\n/g, '<br>')}</p>` : ''}
+          ${x.photos && x.photos.length ? `<div class="rv-ph">${x.photos.map((src, k) => `<button type="button" data-rvph="${esc(src)}" aria-label="${t('photo')} ${k + 1}">${imgTag(src, '', false)}</button>`).join('')}</div>` : ''}</article>`).join('')}</div>
       </div>
       <form class="rv-form" id="rvForm" hidden novalidate>
         <fieldset class="rv-stars"><legend>${t('yourRating')}</legend>
@@ -462,6 +463,7 @@
           <label class="field"><span>${t('reviewPhone')}</span><input name="phone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="01XXXXXXXXX"><small class="muted">${t('reviewPhoneNote')}</small></label>
         </div>
         <label class="field"><span>${t('reviewBody')}</span><textarea name="body" placeholder="${t('reviewBodyPh')}"></textarea></label>
+        <div class="rv-up"><label class="btn btn-outline rv-upbtn"><input type="file" accept="image/*" multiple hidden id="rvFiles">${icon('instagram', 16)} ${t('rvPhotos')}</label><small class="muted">${t('rvPhotoHint')}</small><div class="rv-prev" id="rvPrev"></div></div>
         <p class="error" id="rvErr" hidden></p>
         <button class="btn btn-dark" type="submit">${t('reviewSend')}</button>
       </form>
@@ -1394,17 +1396,35 @@
     px('ViewContent', { content_ids: [p.id], content_type: 'product', content_name: L(p.name), value: p.price, currency: 'BDT' });
     const rvOpen = $('#rvOpen'), rvForm = $('#rvForm');
     rvOpen.addEventListener('click', () => { rvForm.hidden = false; rvOpen.hidden = true; rvForm.querySelector('input').focus(); });
+    let rvFiles = [];
+    $('#rvFiles').addEventListener('change', e => {
+      rvFiles = rvFiles.concat([...e.target.files]).slice(0, 3); e.target.value = '';
+      $('#rvPrev').innerHTML = rvFiles.map((f, i) => `<span><img src="${URL.createObjectURL(f)}" alt=""><button type="button" data-rvrm="${i}" aria-label="${t('remove')}">×</button></span>`).join('');
+    });
+    $('#rvPrev').addEventListener('click', e => { const b = e.target.closest('[data-rvrm]'); if (b) { rvFiles.splice(Number(b.dataset.rvrm), 1); $('#rvFiles').dispatchEvent(new Event('change')); } });
+    // ছবি ছোট করে পাঠানো (মোবাইল ডেটা বাঁচাতে)
+    const shrink = async file => { const bmp = await createImageBitmap(file); const sc = Math.min(1, 1400 / Math.max(bmp.width, bmp.height)); const c = document.createElement('canvas');
+      c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc); c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      let b = await new Promise(r => c.toBlob(r, 'image/webp', 0.82)); if (!b || b.type !== 'image/webp') b = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.82)); return b; };
+    $('#reviews').addEventListener('click', e => { const ph = e.target.closest('[data-rvph]'); if (ph) { const all = [...document.querySelectorAll('[data-rvph]')].map(x => ({ src: x.dataset.rvph, caption: '' })); openLightbox(all, all.findIndex(x => x.src === ph.dataset.rvph)); } });
     rvForm.addEventListener('submit', async e => {
       e.preventDefault();
       const f = rvForm, rating = f.rating.value, name = f.name.value.trim();
       if (!rating || name.length < 2) { $('#rvErr').textContent = t('reviewErr'); $('#rvErr').hidden = false; return; }
       const btn = f.querySelector('[type=submit]'); btn.disabled = true;
       try {
-        const r = await fetch('/api/reviews', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: p.id, rating: Number(rating), name, phone: f.phone.value, body: f.body.value }) });
+        const photos = [];
+        for (const file of rvFiles) {
+          btn.textContent = t('rvUploading');
+          const blob = await shrink(file);
+          const up = await fetch('/api/reviews/photo', { method: 'POST', headers: { 'content-type': blob.type }, body: blob });
+          const uj = await up.json(); if (!up.ok) throw new Error(uj.message); photos.push(uj.key);
+        }
+        const r = await fetch('/api/reviews', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: p.id, rating: Number(rating), name, phone: f.phone.value, body: f.body.value, photos }) });
         const d = await r.json();
         if (!r.ok) throw new Error(d.message);
         f.outerHTML = `<p class="rv-thanks">${t('reviewThanks')}</p>`;
-      } catch (x) { $('#rvErr').textContent = x.message && lang === 'en' ? x.message : t('chatErr'); $('#rvErr').hidden = false; btn.disabled = false; }
+      } catch (x) { $('#rvErr').textContent = x.message && lang === 'en' ? x.message : t('chatErr'); $('#rvErr').hidden = false; btn.disabled = false; btn.textContent = t('reviewSend'); }
     });
     const root = $('.pdp');
     let size = p.sizes.length === 1 && p.sizes[0].stock > 0 ? p.sizes[0].id : null;

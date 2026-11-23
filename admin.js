@@ -89,7 +89,7 @@
   // কে লগইন করেছে আর কোন অংশ দেখতে পারবে
   let ME = { user: { name: '', role: 'super' }, perms: { read: [], write: [] } };
   const canRead = r => ME.perms.read.includes(r), canWrite = r => ME.perms.write.includes(r);
-  const TAB_PERM = { sales: 'sales', dashboard: 'stats', orders: 'orders', abandoned: 'abandoned', chats: 'chats', customers: 'customers', accounts: 'acc', reports: 'report',
+  const TAB_PERM = { courier: 'courier-report', sales: 'sales', dashboard: 'stats', orders: 'orders', abandoned: 'abandoned', chats: 'chats', customers: 'customers', accounts: 'acc', reports: 'report',
     products: 'products', custom: 'custom', gallery: 'gallery', categories: 'categories', banners: 'banners', coupons: 'coupons', reviews: 'reviews',
     settings: 'settings', team: 'users', activity: 'audit' };
   function applyPerms() {
@@ -166,7 +166,7 @@
       products: viewProducts, product: () => viewProductEdit(arg), custom: viewCustom, gallery: viewGallery,
       categories: viewCategories, settings: viewSettings, coupons: viewCoupons, reviews: viewReviews,
       abandoned: viewAbandoned, banners: viewBanners, reports: viewReports,
-      accounts: () => viewAccounts(arg || 'overview'), team: viewTeam, activity: viewActivity, sales: () => viewSales(arg)
+      accounts: () => viewAccounts(arg || 'overview'), team: viewTeam, activity: viewActivity, sales: () => viewSales(arg), courier: viewCourier
     };
     (views[tab] || viewDashboard)().catch(fail);
   }
@@ -215,6 +215,11 @@
           <div class="mom"><div><span>Sales</span><b>${money(d.mom.revenue)}</b>${d.mom.revenuePct == null ? '' : `<em class="${d.mom.revenuePct >= 0 ? 'up' : 'down'}">${d.mom.revenuePct >= 0 ? '▲' : '▼'} ${Math.abs(d.mom.revenuePct)}%</em>`}</div>
           <div><span>Orders</span><b>${d.mom.orders}</b>${d.mom.ordersPct == null ? '' : `<em class="${d.mom.ordersPct >= 0 ? 'up' : 'down'}">${d.mom.ordersPct >= 0 ? '▲' : '▼'} ${Math.abs(d.mom.ordersPct)}%</em>`}</div></div></section>
         <section class="card"><div class="card-head"><h2>Due from customers</h2><a class="link" href="#orders" id="dueLink">See all</a></div><p class="goal-num"><b class="${d.dueTotal.v ? 'down' : ''}">${money(d.dueTotal.v)}</b></p><p class="muted small">${d.dueTotal.n} sale${d.dueTotal.n === 1 ? '' : 's'} not fully paid</p></section>
+      </div>
+      <div class="dash-top glance">
+        <a class="card kpi-link" href="#courier"><h2>Courier this month</h2><p class="goal-num"><b>${money(d.courierMonth.cost)}</b></p><p class="muted small">${d.courierMonth.n} parcels · customers paid ${money(d.courierMonth.charged)} · <b class="${d.courierMonth.shopPaid ? 'down' : ''}">shop paid ${money(d.courierMonth.shopPaid)}</b>${d.courierMonth.free ? ` · ${d.courierMonth.free} free delivery` : ''}</p></a>
+        <a class="card kpi-link" href="#accounts/stock"><h2>Stock worth now</h2><p class="goal-num"><b>${money(d.stockValue.goods + d.stockValue.fabric)}</b></p><p class="muted small">${d.stockValue.pcs} thobes ${money(d.stockValue.goods)} at cost (sells for ${money(d.stockValue.retail)})${d.stockValue.gaj ? ` · fabric ${d.stockValue.gaj} gaj ${money(d.stockValue.fabric)}` : ''}</p></a>
+        <section class="card"><h2>Sales by channel this month</h2>${d.channelsMonth.length ? `<ul class="hbars">${d.channelsMonth.map(c => `<li><span><b class="chtag ch-${esc(c.ch)}">${esc(c.label)}</b></span><i style="--w:${Math.round(c.v / Math.max(1, ...d.channelsMonth.map(x => x.v)) * 100)}%"></i><b>${money(c.v)}</b><small>${c.n}</small></li>`).join('')}</ul>` : '<p class="muted small">No sales yet this month.</p>'}</section>
       </div>
       ${d.followUps.length ? `<section class="card follow-card"><h2>Follow up today</h2><ul class="mini-list">${d.followUps.map(f => `<li><div class="exp-li"><span><b>${esc(f.name || f.phone)}</b> <span class="muted">${esc(f.phone)}</span><span class="block">${esc(f.follow_note || '')}${f.follow_up < todayBD() ? ` <em class="down">since ${esc(f.follow_up)}</em>` : ''}</span></span><span class="r"><a class="btn ghost sm" href="tel:${esc(f.phone)}">Call</a> <a class="btn ghost sm" href="https://wa.me/88${esc(f.phone)}" target="_blank" rel="noopener">WhatsApp</a></span></div></li>`).join('')}</ul></section>` : ''}
       <div class="dash-grid"><div class="dash-col">
@@ -292,7 +297,8 @@
         <button class="chip" data-st="" aria-pressed="${!orderFilter}">All <b>${total}</b></button>
         ${STATUSES.map(([k, l]) => `<button class="chip st-${k}" data-st="${k}" aria-pressed="${orderFilter === k}">${l} <b>${counts[k] || 0}</b></button>`).join('')}
       </div>
-      ${orders.length ? `<p class="muted small">${orders.length} order${orders.length > 1 ? 's' : ''} shown, total ${money(orders.filter(o => o.status !== 'cancelled').reduce((s, o) => s + o.total, 0))} without cancelled</p><div class="orders">${orders.map(orderCard).join('')}</div>`
+      ${orders.length ? `<p class="muted small">${orders.length} order${orders.length > 1 ? 's' : ''} shown, total ${money(orders.filter(o => o.status !== 'cancelled').reduce((s, o) => s + o.total, 0))} without cancelled</p><div class="orders">${orders.map(orderCard).join('')}</div>
+        <div class="bulkbar" id="bulkbar" hidden><b id="bulkN">0</b> selected <button class="btn ghost sm" data-bulk="labels">Print labels</button><button class="btn ghost sm" data-bulk="steadfast">Send to Steadfast</button><button class="btn ghost sm" data-bulk="shipped">Mark shipped</button><button class="btn ghost sm" data-bulk="all">Select all</button><button class="text-btn" data-bulk="clear">Clear</button></div>`
         : '<p class="empty">No orders match. Clear the filters, or wait for new orders from the website.</p>'}`;
 
     const reload = () => viewOrders().catch(fail);
@@ -307,6 +313,7 @@
     $('#fCustom').addEventListener('change', e => { orderCustom = e.target.checked; reload(); });
     $('#fChannel').addEventListener('change', e => { orderChannel = e.target.value; reload(); });
     $('#fDue').addEventListener('change', e => { orderDue = e.target.checked; reload(); });
+    bindBulk(orders, reload);
     $('#main').querySelectorAll('[data-due]').forEach(b => b.addEventListener('click', () => openCollect(orders.find(o => String(o.id) === b.dataset.due), reload)));
     $('#main').querySelectorAll('[data-oedit]').forEach(b => b.addEventListener('click', () => openOrderEdit(orders.find(o => String(o.id) === b.dataset.oedit), reload)));
     $('#csvBtn').addEventListener('click', () => downloadCsv(orders));
@@ -389,7 +396,7 @@
     const phone = o.phone.replace(/^\+?88/, '');
     const hasCustom = o.items.some(l => l.custom);
     return `<details class="order st-${o.status}">
-      <summary>
+      <summary><label class="osel" onclick="event.stopPropagation()"><input type="checkbox" data-osel="${o.id}" aria-label="Select ${esc(o.order_no)}"></label>
         <div class="o-main"><strong>${esc(o.order_no)}${hasCustom ? ' <b class="tag">Custom</b>' : ''} <b class="chtag ch-${esc(o.channel || 'website')}">${CH[o.channel || 'website'] || o.channel}</b></strong><span class="muted">${fmtWhen(o.created_at)}${o.sold_by && o.channel !== 'website' ? ' · ' + esc(o.sold_by) : ''}</span></div>
         <div class="o-cust">${esc(o.name)}<span class="muted">${esc(phone)} ${histChip(o.history)}</span></div>
         <div class="o-total">${money(o.total)}<span class="muted">${o.payment === 'bkash_online' ? (o.paid ? '<b class="paid">bKash paid</b>' : 'bKash, not paid yet') : o.payment === 'bkash' ? 'bKash/Nagad' : 'COD'}</span></div>
@@ -1422,12 +1429,15 @@
         <section class="card"><h2>SMS to customers</h2>
           <p class="muted small">${integ.sms ? '<span class="badge st-delivered">Connected</span> ' : '<span class="badge">Not set up</span> '}Sends an SMS from bulksmsbd.net when the order status changes. Add <b>SMS_API_KEY</b> and <b>SMS_SENDER_ID</b> as secrets in Cloudflare. Steps are in the README.</p>
           <div class="checks-row">
-            ${[['sms_new', 'Order received'], ['sms_confirmed', 'Order confirmed'], ['sms_shipped', 'Order shipped'], ['sms_delivered', 'Order delivered']].map(([k, l]) => `<label class="check"><input type="checkbox" data-flag="${k}" ${s[k] ? 'checked' : ''}> ${l}</label>`).join('')}
+            ${[['sms_new', 'Order received'], ['sms_confirmed', 'Order confirmed'], ['sms_shipped', 'Order shipped'], ['sms_delivered', 'Order delivered'], ['sms_abandoned', 'Reminder 1 hour after an unfinished order']].map(([k, l]) => `<label class="check"><input type="checkbox" data-flag="${k}" ${s[k] ? 'checked' : ''}> ${l}</label>`).join('')}
           </div>
         </section>
         <section class="card"><h2>Courier</h2>
           <p class="muted small">${integ.steadfast ? '<span class="badge st-delivered">Steadfast connected</span> ' : '<span class="badge">Not set up</span> '}With Steadfast connected, each order gets a “Send to Steadfast” button that books the parcel and saves the tracking number. Add <b>STEADFAST_API_KEY</b> and <b>STEADFAST_SECRET_KEY</b> as secrets in Cloudflare (ask Steadfast support for your API keys).</p>
         </section>
+        <section class="card"><h2>Backup</h2>
+          <p class="muted small">A full copy of orders, customers, products and accounts. Every Friday night it is also sent to your Telegram. Keep the file safe; photos stay in Cloudflare.</p>
+          <div class="row-btns"><a class="btn ghost sm" href="/api/admin/backup" download>Download backup now</a><button type="button" class="btn ghost sm" id="bkTg">Send backup to Telegram</button></div></section>
         <section class="card"><h2>Nightly summary on Telegram</h2>
           <p class="muted small">Every night at 10 pm you get today’s sales by channel, profit, orders to confirm and ship, money due, chats waiting and who to call tomorrow. It needs Telegram to be connected (below).</p>
           <button type="button" class="btn ghost sm" id="sumTest">Send today’s summary now</button></section>
@@ -1436,6 +1446,7 @@
         </section>
         <div class="save-bar"><span class="spacer"></span><button class="btn primary" type="submit">Save shop info</button></div>
       </form>`;
+    $('#bkTg').onclick = async () => { try { await api('backup', { method: 'POST' }); toast('Backup sent to Telegram'); } catch (err) { fail(err); } };
     $('#sumTest').onclick = async () => { try { await api('summary', { method: 'POST' }); toast('Summary sent to Telegram'); } catch (err) { fail(err); } };
     $('#sForm').addEventListener('submit', async e => {
       e.preventDefault();
@@ -1508,10 +1519,13 @@
           <span class="badge ${r.status === 'approved' ? 'st-delivered' : r.status === 'pending' ? 'st-new' : ''}">${r.status === 'approved' ? 'On website' : r.status === 'pending' ? 'Waiting' : 'Hidden'}</span></div>
         <p class="muted small">${esc(r.name_en || r.product_code)} · ${esc(r.product_code)} · ${fmtWhen(r.created_at)}${r.phone ? ' · ' + esc(r.phone) : ''}</p>
         ${r.body ? `<p>${esc(r.body)}</p>` : ''}
+        ${(() => { let ph = []; try { ph = JSON.parse(r.photos || '[]'); } catch (e) { /* none */ } return ph.length ? `<div class="rv-photos">${ph.map(k => `<span><a href="/img/${esc(k)}" target="_blank" rel="noopener"><img src="/img/${esc(k)}" alt=""></a><button class="text-btn" data-togal="${esc(k)}" data-cap="${esc(r.name)}">Add to gallery</button></span>`).join('')}</div>` : ''; })()}
         <div class="row-btns">${r.status !== 'approved' ? `<button class="btn primary sm" data-rv="${r.id}" data-s="approved">Approve</button>` : `<button class="btn ghost sm" data-rv="${r.id}" data-s="hidden">Hide</button>`}
           <button class="btn ghost sm danger-t" data-rvdel="${r.id}">Delete</button></div>
       </article>`).join('')}</div>` : '<p class="empty">No reviews yet. After delivery, ask customers to review on the website. The “Order delivered” SMS does this for you.</p>'}</div>`;
     $('#main .vroot').addEventListener('click', async e => {
+      const tg = e.target.closest('[data-togal]');
+      if (tg) { try { await api('gallery', { method: 'POST', body: { image: tg.dataset.togal, album: 'Customer photos', caption_en: tg.dataset.cap, caption_bn: tg.dataset.cap } }); tg.textContent = 'Added ✓'; tg.disabled = true; toast('Added to the gallery (Customer photos)'); } catch (err) { fail(err); } return; }
       const b = e.target.closest('[data-rv]'), d = e.target.closest('[data-rvdel]');
       try {
         if (b) { await api('reviews/' + b.dataset.rv, { method: 'PUT', body: { status: b.dataset.s } }); toast(b.dataset.s === 'approved' ? 'Review approved' : 'Review hidden'); }
@@ -1570,7 +1584,8 @@
           ${bar('Sales (what customers paid)', d.revenue, 'pos')}
           ${bar('Cost of goods', -d.goodsCost)}${bar('Courier charges', -d.courierCost)}${d.codFee ? bar('COD fee', -d.codFee) : ''}${bar('Expenses', -d.expenses)}
           ${bar('Net profit', d.net, d.net < 0 ? 'neg' : 'net')}</div>
-          <p class="muted small">Customers paid ${money(d.deliveryCharged)} delivery charge (included in sales). Discounts given: ${money(d.discounts)}.</p></section>
+          <p class="muted small">Customers paid ${money(d.deliveryCharged)} delivery charge (included in sales). Discounts given: ${money(d.discounts)}.${d.returnCourier ? ` Courier for returned parcels: ${money(d.returnCourier)} (included).` : ''}</p>
+          <p class="muted small">${d.cogsMethod === 'count' ? `Cost of goods from stock counts: opening ${d.cogsInfo.opening ? money(d.cogsInfo.opening.value) + ' (' + d.cogsInfo.opening.day + ')' : '0'} + bought ${money(d.cogsInfo.bought)} − closing ${money(d.cogsInfo.closing.value)} (${d.cogsInfo.closing.day}).` : 'Cost of goods from each product’s cost price.'}</p></section>
         <section class="card"><div class="card-head"><h2>Expenses</h2></div>
           <form id="expForm" class="exp-form"><div class="g2">
             <label class="field"><span>Date</span><input type="date" name="day" value="${to}"></label>
@@ -1641,7 +1656,7 @@
       ${parts.new ? `<div><span>From ${shortDay(parts.new.from)} <small>new rule: fabric is stock, machine is an asset</small></span><b class="${parts.new.net < 0 ? 'down' : 'up'}">${tk(parts.new.net)}</b>${ph(parts.new.net)}</div>` : ''}
       <div class="ps-tot"><span>Total profit</span><b class="${total < 0 ? 'down' : 'up'}">${tk(total)}</b>${ph(total)}</div></div>`;
   }
-  const accTabs = sub => `<div class="acc-tabs">${[['overview', 'Overview'], ['book', 'Cash book'], ['partners', 'Shareholders'], ['settings', 'Settings', 'super'], ['import', 'Import from Google Sheet', 'super']]
+  const accTabs = sub => `<div class="acc-tabs">${[['overview', 'Overview'], ['book', 'Cash book'], ['partners', 'Shareholders'], ['stock', 'Stock count'], ['settings', 'Settings', 'super'], ['import', 'Import from Google Sheet', 'super']]
     .filter(t => !t[2] || ME.user.role === 'super').map(([k, l]) => `<a href="#accounts/${k}" aria-current="${sub === k ? 'page' : 'false'}">${l}</a>`).join('')}</div>`;
   async function viewAccounts(sub) {
     ACC = await api('acc/meta');
@@ -1649,6 +1664,7 @@
     if (sub === 'partners') return accPartners();
     if (sub === 'settings') return accSettingsView();
     if (sub === 'import') return accImport();
+    if (sub === 'stock') return accStock();
     return accOverview();
   }
   const entryAmt = e => `<b class="amt ${e.type}">${e.type === 'in' ? '+' : e.type === 'out' ? '−' : '⇄'} ${tk(e.amount)}</b>`;
@@ -1937,6 +1953,7 @@
           .map(([k, l, h]) => `<label class="opt-card"><input type="radio" name="profit_rule" value="${k}" ${s.profit_rule === k ? 'checked' : ''}><span><b>${l}</b><small>${h}</small></span></label>`).join('')}</div>
         <div class="g2"><label class="field"><span>Count profit from</span><select name="profit_basis"><option value="delivered" ${s.profit_basis === 'delivered' ? 'selected' : ''}>Delivered orders only (money received)</option><option value="all" ${s.profit_basis === 'all' ? 'selected' : ''}>All orders except cancelled</option></select></label>
         <label class="field"><span>Business start date <small>profit counts from here</small></span><input type="date" name="start_day" value="${esc(s.start_day)}"></label>
+        <label class="field"><span>Cost of goods sold comes from</span><select name="cogs_method"><option value="cost" ${s.cogs_method !== 'count' ? 'selected' : ''}>Cost price written on each product</option><option value="count" ${s.cogs_method === 'count' ? 'selected' : ''}>Monthly stock count (opening + bought − closing)</option></select></label>
         <label class="field"><span>Old rule used up to <small>leave empty to use only the new rule</small></span><input type="date" name="old_until" value="${esc(s.old_until || '')}"></label>
         <p class="muted small rule-help">Up to this date profit is worked out like your old Google Sheet: sales minus <b>all</b> khoroch, including fabric and machines. After it, fabric counts as stock and a machine as an asset. This keeps the old numbers your partners already know.</p></div>
         <button class="btn primary sm">Save</button></form></section>
@@ -2362,6 +2379,120 @@
     const np = $('#notPaid'); if (np) np.onclick = () => { $('#oeF').paid_amount.value = 0; };
     $('#oeF').onsubmit = async e => { e.preventDefault(); const body = { ...Object.fromEntries(new FormData(e.target)), items };
       try { const r = await api(`orders/${o.id}/edit`, { method: 'PUT', body }); toast('Order updated · total ' + money(r.total) + (r.due ? ` · due ${money(r.due)}` : '') + (r.refund ? ` · customer paid ${money(r.refund)} more, give it back` : '')); dlg.close(); done && done(); } catch (err) { fail(err); } };
+  }
+
+  // ================= COURIER (কুরিয়ারে কত খরচ, কে দিল) =================
+  let cPeriod = 'month', cOnlyFree = false;
+  async function viewCourier() {
+    const [from, to] = periodRange(cPeriod);
+    const d = await api(`courier-report?from=${from}&to=${to}`);
+    const list = cOnlyFree ? d.list.filter(o => o.charged < o.cost) : d.list;
+    const reasonTxt = { coupon: 'Free delivery coupon', free_over: 'Free delivery offer', free: 'Free (delivery charge 0)', returned: 'Returned parcel', '': '' };
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Courier</h1><p class="muted">What you paid the courier, what customers paid for delivery, and how much the shop covered (free delivery, returns). ${from} to ${to}</p></div>
+        <button class="btn ghost sm" onclick="print()">Print</button></div>
+      <div class="chips">${[['month', 'This month'], ['last', 'Last month'], ['30', 'Last 30 days'], ['year', 'This year']].map(([k, l]) => `<button class="chip" data-cp="${k}" aria-pressed="${cPeriod === k}">${l}</button>`).join('')}</div>
+      <div class="kpis kpis-5">
+        <div class="kpi"><span>Parcels sent</span><strong>${d.parcels}</strong><small>${d.delivered} delivered · ${d.inTransit} on the way · ${d.returned} returned</small></div>
+        <div class="kpi"><span>Paid to courier</span><strong class="down">${money(d.cost)}</strong><small>${d.parcels ? money(Math.round(d.cost / d.parcels)) + ' per parcel' : '—'}</small></div>
+        <div class="kpi"><span>Customers paid for delivery</span><strong class="up">${money(d.charged)}</strong><small>delivery charge on their orders</small></div>
+        <div class="kpi kpi-net ${d.shopPaid ? '' : ''}"><span>Shop paid from own pocket</span><strong>${money(d.shopPaid)}</strong><small>free delivery, returns, lower charge</small></div>
+        <div class="kpi"><span>Free delivery orders</span><strong>${d.freeCount}</strong><small>cost you ${money(d.freeCost)}${d.returnCost ? ` · returns ${money(d.returnCost)}` : ''}</small></div>
+      </div>
+      <div class="dash-grid"><div class="dash-col">
+        <section class="card"><div class="card-head"><h2>Parcels</h2><label class="check"><input type="checkbox" id="cFree" ${cOnlyFree ? 'checked' : ''}> Only where the shop paid</label></div>
+          ${list.length ? `<div class="tbl-scroll"><table class="tbl"><thead><tr><th>Order</th><th>Customer</th><th>Area</th><th class="r">Customer paid</th><th class="r">Courier cost</th><th class="r">Shop paid</th></tr></thead><tbody>
+          ${list.map(o => `<tr><td><b>${esc(o.order_no)}</b><span class="muted block small">${esc(o.day)}${o.reason ? ' · ' + reasonTxt[o.reason] : ''}</span></td><td>${esc(o.name)}<span class="muted block small">${esc(o.phone || '')}</span></td>
+            <td>${o.area === 'outside' ? 'Outside' : 'Dhaka'}</td><td class="r">${money(o.charged)}</td>
+            <td class="r"><input class="num cc-in" type="number" min="0" value="${o.cost}" data-cc="${o.id}" title="${o.costSet ? 'Set by hand' : 'Your standard rate'}" ${canWrite('courier-cost') ? '' : 'disabled'}>${o.costSet ? '<span class="cc-set" title="Set by hand">✎</span>' : ''}</td>
+            <td class="r ${o.cost - o.charged > 0 ? 'down' : 'muted'}">${o.cost - o.charged > 0 ? money(o.cost - o.charged) : '—'}</td></tr>`).join('')}</tbody></table></div>`
+            : '<p class="muted">No parcels in this period. Orders count here once they are shipped.</p>'}
+          <p class="muted small">Courier cost uses your standard rates (inside Dhaka ${money(d.rates.inside)}, outside ${money(d.rates.outside)}, change them in Profit &amp; loss › Your costs). If a parcel cost more or less, type the real amount in the box and press Enter.</p></section>
+      </div><div class="dash-col">
+        <section class="card"><h2>By area</h2><table class="tbl"><thead><tr><th>Area</th><th class="r">Parcels</th><th class="r">Courier cost</th><th class="r">Customers paid</th></tr></thead><tbody>
+          <tr><td>Inside Dhaka</td><td class="r">${d.area.inside.n}</td><td class="r">${money(d.area.inside.cost)}</td><td class="r">${money(d.area.inside.charged)}</td></tr>
+          <tr><td>Outside Dhaka</td><td class="r">${d.area.outside.n}</td><td class="r">${money(d.area.outside.cost)}</td><td class="r">${money(d.area.outside.charged)}</td></tr></tbody></table></section>
+        <section class="card"><h2>Month by month</h2>${d.months.length ? `<ul class="hbars">${d.months.map(m => `<li><span>${m.m}</span><i style="--w:${Math.round(m.cost / Math.max(1, ...d.months.map(x => x.cost)) * 100)}%"></i><b>${money(m.cost)}</b><small>${m.n}</small></li>`).join('')}</ul>` : '<p class="muted small">Nothing yet.</p>'}</section>
+        <section class="card"><h2>Check with the courier’s bills</h2><p class="muted small">Charges you entered from courier payments in Accounts for this period: <b>${money(d.recordedCharges)}</b>. Estimated here: <b>${money(d.cost)}</b>. A big gap means some parcel costs need fixing.</p></section>
+      </div></div></div>`;
+    const root = $('#main .vroot');
+    root.addEventListener('click', e => { const b = e.target.closest('[data-cp]'); if (b) { cPeriod = b.dataset.cp; viewCourier().catch(fail); } });
+    $('#cFree').onchange = e => { cOnlyFree = e.target.checked; viewCourier().catch(fail); };
+    root.querySelectorAll('[data-cc]').forEach(inp => inp.addEventListener('change', async () => {
+      try { await api('courier-cost/' + inp.dataset.cc, { method: 'PUT', body: { courier_cost: inp.value } }); toast('Courier cost saved'); viewCourier().catch(fail); } catch (err) { fail(err); }
+    }));
+  }
+
+  // ================= অনেক অর্ডার একসাথে: লেবেল, Steadfast, Shipped =================
+  function bindBulk(orders, reload) {
+    const bar = $('#bulkbar'); if (!bar) return;
+    const sel = () => [...document.querySelectorAll('[data-osel]:checked')].map(c => orders.find(o => String(o.id) === c.dataset.osel)).filter(Boolean);
+    const upd = () => { const n = sel().length; bar.hidden = !n; $('#bulkN').textContent = n; };
+    $('#main').querySelectorAll('[data-osel]').forEach(c => c.addEventListener('change', upd));
+    bar.onclick = async e => {
+      const b = e.target.closest('[data-bulk]'); if (!b) return;
+      const k = b.dataset.bulk, list = sel();
+      if (k === 'clear') { document.querySelectorAll('[data-osel]').forEach(c => { c.checked = false; }); return upd(); }
+      if (k === 'all') { document.querySelectorAll('[data-osel]').forEach(c => { c.checked = true; }); return upd(); }
+      if (k === 'labels') return printLabels(list);
+      if (k === 'shipped') {
+        if (!confirm(`Mark ${list.length} order(s) as shipped?`)) return;
+        for (const o of list) { try { await api('orders/' + o.id, { method: 'PUT', body: { status: 'shipped' } }); } catch (err) { fail(err); } }
+        toast('Marked shipped'); reload(); pollBadges(); return;
+      }
+      if (k === 'steadfast') {
+        if (!integ.steadfast) return toast('Steadfast is not set up yet. See Shop info › Courier.', true);
+        const todo = list.filter(o => !o.consignment && o.status !== 'cancelled' && o.status !== 'delivered');
+        if (!todo.length) return toast('These orders are already booked or closed.', true);
+        if (!confirm(`Book ${todo.length} parcel(s) with Steadfast?`)) return;
+        let okN = 0;
+        for (const [i, o] of todo.entries()) { b.textContent = `Booking ${i + 1}/${todo.length}…`; try { await api('courier/' + o.id, { method: 'POST' }); okN++; } catch (err) { toast(`${o.order_no}: ${err.message}`, true); } }
+        toast(`${okN} parcel(s) booked`); reload(); pollBadges();
+      }
+    };
+  }
+  async function printLabels(list) {
+    let shop = {}; try { shop = await api('settings'); } catch (e) { /* none */ }
+    const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to print.', true);
+    const label = o => { const ph = String(o.phone || '').replace(/^\+?88/, ''), cod = o.payment === 'bkash' || o.paid ? 0 : Math.max(0, o.total - (o.paid_amount || 0));
+      return `<div class="lb"><div class="top"><img src="${location.origin}/logo-light.png" alt=""><div><b>Al Hadaf</b><span>${esc(shop.phone || '')}</span></div><div class="no">${esc(o.order_no)}</div></div>
+        <div class="to"><small>TO</small><b>${esc(o.name)}</b><span class="ph">${esc(ph)}</span><span>${esc(o.address || '')}</span><span>${o.area === 'outside' ? 'Outside Dhaka' : 'Inside Dhaka'}</span></div>
+        <div class="bot"><span>${o.items.reduce((s, l) => s + l.qty, 0)} pcs · ${esc(o.items.map(l => `${l.custom ? 'Custom' : l.code} ${l.size}`).join(', ').slice(0, 70))}</span><b class="cod">${cod ? 'COD ৳' + cod.toLocaleString('en-IN') : 'PAID'}</b></div>
+        ${o.tracking_code ? `<div class="trk">Steadfast ${esc(o.tracking_code)}</div>` : ''}</div>`; };
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Labels</title><style>
+      @page{size:A4;margin:8mm}body{margin:0;font-family:system-ui,'Hind Siliguri',sans-serif;color:#111}.sheet{display:grid;grid-template-columns:1fr 1fr;gap:6mm}
+      .lb{border:1.5px dashed #444;border-radius:6px;padding:4mm;height:64mm;box-sizing:border-box;display:flex;flex-direction:column;gap:2mm;break-inside:avoid;page-break-inside:avoid}
+      .top{display:flex;align-items:center;gap:3mm;border-bottom:1px solid #ccc;padding-bottom:2mm}.top img{height:10mm}.top div{display:flex;flex-direction:column;font-size:11px}.top b{font-size:13px}.no{margin-left:auto;font-weight:700;font-size:14px}
+      .to{display:flex;flex-direction:column;font-size:12.5px;line-height:1.35;flex:1}.to small{font-size:9px;color:#666;letter-spacing:.1em}.to b{font-size:16px}.ph{font-size:17px;font-weight:700;letter-spacing:.03em}
+      .bot{display:flex;justify-content:space-between;align-items:flex-end;gap:3mm;font-size:10.5px;color:#333}.cod{font-size:18px;border:2px solid #111;padding:1mm 3mm;border-radius:4px;white-space:nowrap;color:#111}.trk{font-size:11px;font-weight:600}
+      @media print{button{display:none}}</style></head><body><div class="sheet">${list.map(label).join('')}</div><button onclick="print()">Print</button><script>setTimeout(()=>print(),600)<\/script></body></html>`);
+    w.document.close();
+  }
+
+  // ================= STOCK COUNT (মাস শেষে স্টক গোনা) =================
+  async function accStock() {
+    const d = await api('acc/stock');
+    const s = d.suggest;
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Stock count</h1><p class="muted">At the end of each month, write how much your stock is worth at cost. Profit then uses: stock at the start + stock you bought − stock at the end = cost of what you sold.</p></div></div>
+      ${accTabs('stock')}
+      ${d.settings.cogs_method !== 'count' ? `<p class="info-box">Profit now uses each product’s cost price. To use these counts instead, a super admin can switch it in Accounts › Settings › “Cost of goods sold comes from”.</p>` : '<p class="ok-box">Profit uses these stock counts.</p>'}
+      <div class="dash-grid"><div class="dash-col">
+        <section class="card"><h2>New count</h2>
+          <form id="scForm"><div class="g2"><label class="field"><span>Date counted <small>usually the last day of the month</small></span><input type="date" name="day" value="${todayBD()}"></label><span></span>
+            <label class="field"><span>Fabric, thread, buttons (৳ at cost)</span><input type="number" name="fabric" min="0" value="${s.fabric || ''}"></label>
+            <label class="field"><span>Ready thobes (৳ at cost)</span><input type="number" name="goods" min="0" value="${s.goods || ''}"></label>
+            <label class="field"><span>Other stock (৳) <small>packaging, attar…</small></span><input type="number" name="other" min="0" value="0"></label>
+            <label class="field"><span>Note</span><input name="note" placeholder="Counted by…"></label></div>
+            <p class="muted small">Filled in from the system: ready thobes ${money(s.goods)}${s.goodsMissing ? ` (<b class="down">${s.goodsMissing} sizes have no cost price</b>)` : ''}, fabric ${money(s.fabric)}${s.fabricMissing ? ` (<b class="down">${s.fabricMissing} fabrics have no cost per gaj</b>)` : ''}. Correct them after counting the shelf.</p>
+            <button class="btn primary sm">Save count</button></form></section>
+      </div><div class="dash-col">
+        <section class="card"><h2>Past counts</h2>${d.list.length ? `<table class="tbl"><thead><tr><th>Date</th><th class="r">Fabric</th><th class="r">Thobes</th><th class="r">Other</th><th class="r">Total</th><th></th></tr></thead><tbody>
+          ${d.list.map(c => `<tr><td>${esc(c.day)}<span class="muted block small">${esc(c.note || '')} ${esc(c.created_by || '')}</span></td><td class="r">${money(c.fabric)}</td><td class="r">${money(c.goods)}</td><td class="r">${money(c.other)}</td><td class="r"><b>${money(c.total)}</b></td>
+          <td class="r">${['super', 'admin'].includes(ME.user.role) ? `<button class="text-btn" data-scdel="${c.id}">Delete</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No counts yet. Do the first one at the end of this month.</p>'}</section>
+      </div></div></div>`;
+    $('#scForm').onsubmit = async e => { e.preventDefault(); try { await api('acc/stock', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast('Stock count saved'); accStock().catch(fail); } catch (err) { fail(err); } };
+    $('#main .vroot').addEventListener('click', async e => { const b = e.target.closest('[data-scdel]'); if (b && confirm('Delete this stock count?')) { try { await api('acc/stock/' + b.dataset.scdel, { method: 'DELETE' }); toast('Deleted'); accStock().catch(fail); } catch (err) { fail(err); } } });
   }
 
   // ---------- start ----------

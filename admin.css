@@ -698,3 +698,47 @@ dialog.adlg.wide { width: min(900px, 100% - 24px); }
   .order summary .badge { grid-column: 3; grid-row: 2; justify-self: end; }
   .order summary .duetag { grid-column: 2; }
 }
+
+/* ===== v14: Audit ===== */
+.nbadge.err { background: var(--red); color: #fff; }
+.ck-dash { display: flex; align-items: center; gap: 14px; text-decoration: none; padding: 16px 22px; border-left: 4px solid var(--line); }
+.ck-dash .ck-go { margin-left: auto; font-size: 14px; text-decoration: underline; color: var(--muted); white-space: nowrap; }
+.ck-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line); flex: none; }
+.ck-dash.lv-error { border-left-color: var(--red); } .ck-dash.lv-error .ck-dot { background: var(--red); }
+.ck-dash.lv-warn { border-left-color: var(--orange); } .ck-dash.lv-warn .ck-dot { background: var(--orange); }
+.ck-dash.lv-ok { border-left-color: var(--green); } .ck-dash.lv-ok .ck-dot { background: var(--green); }
+.ck-dash:hover { border-color: var(--text); }
+.ck-sum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 22px; }
+.ck-tile { text-align: left; background: var(--card); border: 1px solid var(--line); border-top: 3px solid var(--line); border-radius: 6px; padding: 14px 16px; font: inherit; cursor: pointer; display: grid; gap: 2px; }
+.ck-tile b { font-size: 28px; font-weight: 500; line-height: 1.1; }
+.ck-tile span { font-weight: 500; }
+.ck-tile small { color: var(--muted); font-size: 13px; }
+.ck-tile.lv-error { border-top-color: var(--red); } .ck-tile.lv-error b { color: var(--red); }
+.ck-tile.lv-warn { border-top-color: var(--orange); } .ck-tile.lv-warn b { color: #A35F00; }
+.ck-tile.lv-info { border-top-color: var(--blue); } .ck-tile.lv-info b { color: var(--blue); }
+.ck-tile[aria-pressed="true"] { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+.ck-tile:hover { border-color: var(--text); }
+.ck-showing { margin: -8px 0 16px; font-size: 14px; color: var(--muted); }
+.ck-group { margin-bottom: 26px; }
+.ck-group > h2 { font-size: 17px; margin-bottom: 10px; }
+.ck-group > h2 .muted { font-size: 14px; margin-left: 4px; }
+.ck-item { display: grid; grid-template-columns: 92px 1fr; gap: 14px; background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 6px; padding: 16px 18px; margin-bottom: 10px; }
+.ck-item.lv-error { border-left-color: var(--red); } .ck-item.lv-warn { border-left-color: var(--orange); } .ck-item.lv-info { border-left-color: var(--blue); }
+.ck-lv { font-size: 13px; font-weight: 600; padding-top: 2px; }
+.ck-item.lv-error .ck-lv { color: var(--red); } .ck-item.lv-warn .ck-lv { color: #A35F00; } .ck-item.lv-info .ck-lv { color: var(--blue); }
+.ck-main h3 { font-size: 15px; font-weight: 500; margin-bottom: 4px; overflow-wrap: anywhere; }
+.ck-main p { margin: 0 0 6px; font-size: 14px; overflow-wrap: anywhere; }
+.ck-how { color: var(--muted); }
+.ck-how b { color: var(--text); font-weight: 500; }
+.ck-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.ck-clear { border-left: 4px solid var(--green); }
+.ck-foot { margin-top: 8px; }
+.ck-lock { background: #FDEBD3; border-radius: 6px; padding: 10px 12px; font-size: 14px; margin: 0 0 14px; }
+.ck-lock a { font-weight: 500; }
+.entry-form.linked input[readonly] { background: var(--bg); color: var(--muted); }
+@media (max-width: 760px) {
+  .ck-sum { grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .ck-tile { padding: 10px; } .ck-tile b { font-size: 22px; } .ck-tile small { display: none; }
+  .ck-item { grid-template-columns: 1fr; gap: 4px; padding: 14px; }
+  .ck-dash { flex-wrap: wrap; } .ck-dash .ck-go { margin-left: 24px; }
+}

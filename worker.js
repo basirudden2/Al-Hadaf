@@ -193,6 +193,12 @@ async function ensureSchema(env) {
   if (schemaReady) return;
   await env.DB.batch(SCHEMA.map(s => env.DB.prepare(s)));
   for (const m of MIGRATIONS) { try { await env.DB.prepare(m).run(); } catch (e) { /* already there */ } }
+  // v14: কুরিয়ারে পাঠানো হয়েছে কিন্তু বাকি টাকা কাস্টমার নিজে দেবে, এমন বিক্রিতেও কুরিয়ার খরচ ধরার জন্য।
+  // কলাম প্রথমবার তৈরি হলেই আগের এমন বিক্রিগুলো (Confirmed/Shipped অবস্থার হাতে-হাতে বিক্রি) একবার ঠিক করা হয়।
+  try {
+    await env.DB.prepare('ALTER TABLE orders ADD COLUMN via_courier INTEGER DEFAULT 0').run();
+    await env.DB.prepare("UPDATE orders SET via_courier = 1 WHERE delivery_mode = 'handover' AND status IN ('confirmed', 'shipped')").run();
+  } catch (e) { /* already there */ }
   const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM categories').first();
   if (!c.n) await seed(env);
   const f = await env.DB.prepare('SELECT COUNT(*) AS n FROM fabrics').first();
@@ -287,7 +293,7 @@ const ROLES = {
 const AREAS = {
   sales: ['orders', 'courier', 'chats', 'abandoned', 'customers', 'customer', 'fraud', 'stock-alerts', 'sales', 'due'],
   catalog: ['products', 'categories', 'custom', 'fabrics', 'gallery', 'gallery-opts', 'upload', 'banners', 'reviews', 'coupons', 'sms', 'settings'],
-  money: ['stats', 'report', 'finance', 'expenses', 'acc', 'goals', 'summary', 'courier-report', 'courier-cost', 'backup'],
+  money: ['stats', 'report', 'finance', 'expenses', 'acc', 'goals', 'summary', 'courier-report', 'courier-cost', 'backup', 'checkup'],
   people: ['users', 'audit']
 };
 function can(user, res, method) {
@@ -513,6 +519,8 @@ async function adminApi(req, env, path, m, url, ctx, user) {
     if (!sub && m === 'POST') return createSale(req, env, user, ctx);
   }
   if (res === 'due' && m === 'POST' && id) return collectDue(req, env, id, user);
+  if (res === 'checkup' && m === 'GET') return json(await runCheckup(env));
+  if (res === 'checkup' && m === 'POST') return checkupFix(req, env, user);
   if (res === 'courier-report' && m === 'GET') return courierReport(env, url);
   if (res === 'courier-cost' && m === 'PUT' && id) {
     const b = await readJson(req) || {};
@@ -1685,7 +1693,7 @@ async function profitReport(env, from, to, basis, quick) {
   const BD = "date(created_at, '+6 hours')";
   const statusSql = basis === 'delivered' ? "status = 'delivered'" : "status != 'cancelled'";
   const [orders, prods, fabs, fin, exp] = await Promise.all([
-    D.prepare(`SELECT ${BD} AS day, area, payment, paid, status, items, subtotal, delivery, discount, bundle_off, coupon, total, delivery_mode, courier_cost FROM orders WHERE ${statusSql} AND ${BD} BETWEEN ? AND ? LIMIT 10000`).bind(from, to).all(),
+    D.prepare(`SELECT ${BD} AS day, area, payment, paid, status, items, subtotal, delivery, discount, bundle_off, coupon, total, delivery_mode, via_courier, courier_cost, paid_amount, COALESCE(channel, 'website') AS channel FROM orders WHERE ${statusSql} AND ${BD} BETWEEN ? AND ? LIMIT 10000`).bind(from, to).all(),
     D.prepare('SELECT code, name_en, cost FROM products').all(),
     D.prepare('SELECT id, cost_per_gaj, per_thobe FROM fabrics').all(),
     getFinance(env),
@@ -1714,7 +1722,8 @@ async function profitReport(env, from, to, basis, quick) {
       cost += (c || 0) * l.qty; t.pieces += l.qty;
     }
     const courier = courierCostOf(o, fin);
-    const cod = o.payment === 'cod' && o.delivery_mode !== 'handover' && !o.paid ? Math.round(o.total * fin.cod_fee_pct / 100) : 0;
+    // COD ফি শুধু কুরিয়ার যে টাকা তোলে তার উপর (দোকানে আগে পাওয়া টাকা বাদ)
+    const cod = o.payment === 'cod' && o.delivery_mode !== 'handover' && !o.paid ? Math.round(Math.max(0, o.total - (o.channel !== 'website' ? o.paid_amount || 0 : 0)) * fin.cod_fee_pct / 100) : 0;
     t.orders++; t.revenue += o.total; t.deliveryCharged += o.delivery; t.discounts += (o.discount || 0) + (o.bundle_off || 0);
     t.goodsCost += Math.round(cost); t.courierCost += courier; t.codFee += cod;
     const d = days[o.day] = days[o.day] || { day: o.day, revenue: 0, profit: 0, orders: 0 };
@@ -1725,7 +1734,7 @@ async function profitReport(env, from, to, basis, quick) {
   exp.results.forEach(e => { byCat[e.category] = (byCat[e.category] || 0) + e.amount; });
   t.otherIncome = other.v; t.revenue += other.v;
   // ফেরত আসা পার্সেলেও কুরিয়ারকে টাকা দিতে হয়
-  const ret = (await D.prepare(`SELECT area, delivery_mode, courier_cost FROM orders WHERE status = 'cancelled' AND cancel_type = 'returned' AND delivery_mode != 'handover' AND ${BD} BETWEEN ? AND ?`).bind(from, to).all()).results;
+  const ret = (await D.prepare(`SELECT area, delivery_mode, via_courier, courier_cost FROM orders WHERE status = 'cancelled' AND cancel_type = 'returned' AND (delivery_mode != 'handover' OR via_courier = 1) AND ${BD} BETWEEN ? AND ?`).bind(from, to).all()).results;
   t.returnCourier = ret.reduce((sum, o) => sum + courierCostOf(o, fin), 0); t.courierCost += t.returnCourier;
   // মাসের শেষে স্টক গোনা থাকলে মালের খরচ সেখান থেকে
   const cg = await cogsByCount(env, from, to);
@@ -1909,6 +1918,8 @@ async function postOrderSale(env, o) {
   const acc = await D.prepare('SELECT id FROM acc_accounts WHERE kind = ? AND active = 1 ORDER BY sort, id LIMIT 1').bind(kind).first()
     || await D.prepare("SELECT id FROM acc_accounts WHERE kind = 'cash' ORDER BY sort, id LIMIT 1").first();
   if (!sales || !acc) return;
+  // পুরো টাকা আগেই পাওয়া গেলে (দোকানে) কুরিয়ারের কাছে কিছু পাওনা নেই, ০ টাকার এন্ট্রি বানানো হয় না
+  if (Math.max(0, o.total - (o.paid_amount || 0)) <= 0) return;
   const day = new Date(Date.now() + 6 * 3600e3).toISOString().slice(0, 10);
   await D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, note, source, order_no, created_by)
     VALUES (?, 'in', ?, ?, ?, ?, ?, 'order', ?, 'website') ON CONFLICT DO NOTHING`).bind(day, sales.id, Math.max(0, o.total - (o.paid_amount || 0)), acc.id, o.name || '', 'Order ' + o.order_no, o.order_no).run();
@@ -1927,6 +1938,7 @@ async function accApi(req, env, parts, m, url, user) {
       if (!['super', 'admin'].includes(user.role)) return bad('Only an admin can delete entries.', 403);
       const e = await entryById(env, id);
       if (!e) return bad('Entry not found.', 404);
+      if (e.source === 'order' && e.amount > 0 && user.role !== 'super') return bad(`This money is linked to order ${e.order_no || e.ref}. Change or cancel the order instead.`);
       await D.prepare('DELETE FROM acc_entries WHERE id = ?').bind(id).run();
       await audit(env, user, 'DELETE', 'acc', 'TX-' + id, describeEntry(e));
       return json({ ok: true });
@@ -2008,7 +2020,7 @@ async function accApi(req, env, parts, m, url, user) {
     return json({ ok: true, deleted: n });
   }
   if (sub === 'backfill' && m === 'POST') {
-    const list = (await D.prepare("SELECT * FROM orders WHERE status = 'delivered' AND order_no NOT IN (SELECT order_no FROM acc_entries WHERE order_no IS NOT NULL)").all()).results;
+    const list = (await D.prepare("SELECT * FROM orders WHERE status = 'delivered' AND delivery_mode != 'handover' AND order_no NOT IN (SELECT order_no FROM acc_entries WHERE order_no IS NOT NULL) AND order_no NOT IN (SELECT ref FROM acc_entries WHERE source = 'order' AND ref IS NOT NULL)").all()).results;
     for (const o of list) await postOrderSale(env, o);
     await audit(env, user, 'ADD', 'acc', 'backfill', `${list.length} delivered orders posted as sales`);
     return json({ ok: true, posted: list.length });
@@ -2032,6 +2044,14 @@ const describeEntry = e => [e.day, e.type === 'in' ? 'Joma' : e.type === 'out' ?
 
 async function saveEntry(req, env, id, user) {
   const D = env.DB, b = await readJson(req) || {};
+  // অর্ডারের সাথে যুক্ত টাকা Cash book থেকে বদলালে অর্ডার আর হিসাব আলাদা হয়ে যায়, তাই টাকা/খাত এখানে বদলানো যায় না
+  if (id) {
+    const linked = await D.prepare("SELECT * FROM acc_entries WHERE id = ? AND source = 'order'").bind(id).first();
+    if (linked) {
+      if (b.amount != null && Math.round(Number(b.amount) || 0) !== linked.amount) return bad(`This money is linked to order ${linked.order_no || linked.ref}. Change the amount from Orders › Edit order (or Collect due), so the order and the cash book stay the same.`);
+      Object.assign(b, { amount: linked.amount, type: linked.type, category_id: linked.category_id, ref: linked.ref, partner_id: linked.partner_id });
+    }
+  }
   const type = ['in', 'out', 'transfer'].includes(b.type) ? b.type : '';
   const day = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') ? b.day : '';
   const amount = Math.round(Number(b.amount) || 0);
@@ -2263,7 +2283,8 @@ async function salesMeta(env) {
   ]);
   const by = {};
   sizes.results.forEach(z => (by[z.product_id] = by[z.product_id] || []).push({ id: z.id, label: z.label, stock: z.stock }));
-  return { channels: CHANNELS, accounts: accs.results,
+  const fin = await getFinance(env);
+  return { channels: CHANNELS, accounts: accs.results, courierRates: { inside: fin.courier_inside, outside: fin.courier_outside },
     products: prods.results.map(p => ({ id: p.id, code: p.code, name: p.name_en, color: p.color_en, hex: p.color_hex, price: p.price, image: imgs(p.images)[0] ? '/img/' + imgs(p.images)[0] : '', sizes: by[p.id] || [] })) };
 }
 
@@ -2302,6 +2323,13 @@ async function createSale(req, env, user, ctx) {
   const subtotal = lines.reduce((t, l) => t + l.price * l.qty, 0);
   const delivery = Math.max(0, int(b.delivery)), discount = Math.min(subtotal, Math.max(0, int(b.discount)));
   const total = subtotal + delivery - discount;
+  // কুরিয়ারকে আসলে কত দিতে হলো, আর সেটা এখনই কোন অ্যাকাউন্ট থেকে দেওয়া হলো (খালি = পরে কুরিয়ার কেটে নেবে)
+  const courierCost = mode === 'courier' && b.courier_cost !== '' && b.courier_cost != null ? Math.max(0, int(b.courier_cost)) : null;
+  const courierFrom = mode === 'courier' && courierCost ? int(b.courier_paid_from, 0) : 0;
+  if (courierFrom) {
+    const ca = await D.prepare("SELECT id FROM acc_accounts WHERE id = ? AND kind != 'courier'").bind(courierFrom).first();
+    if (!ca) return bad('Choose where the courier money was paid from.');
+  }
   const pays = (Array.isArray(b.payments) ? b.payments : []).map(p => ({ account_id: int(p.account_id), amount: Math.max(0, int(p.amount)) })).filter(p => p.amount > 0);
   const paid = pays.reduce((t, p) => t + p.amount, 0);
   if (paid > total) return bad('Payment is more than the total.');
@@ -2322,14 +2350,20 @@ async function createSale(req, env, user, ctx) {
   const payment = paid >= total && payKinds.every(a => a.kind === 'bkash' || a.kind === 'nagad') && payKinds.length ? 'bkash' : 'cod';
   const created = `${day} ${bdNow().toISOString().slice(11, 19)}`;
   const createdUtc = new Date(Date.parse(created.replace(' ', 'T') + 'Z') - 6 * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
-  await D.prepare(`INSERT INTO orders (order_no, created_at, name, phone, address, area, payment, trx, note, items, subtotal, delivery, total, status, lang, discount, channel, delivery_mode, paid_amount, sold_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'en',?,?,?,?,?)`).bind(orderNo, createdUtc, name, phone, str(b.address, 500), b.area === 'outside' ? 'outside' : 'inside', payment, str(b.trx, 40), str(b.note, 500),
-    JSON.stringify(lines), subtotal, delivery, total, mode === 'handover' ? 'delivered' : 'confirmed', discount, channel, custDue ? 'handover' : 'courier', paid, str(b.sold_by, 60) || user.name).run();
+  await D.prepare(`INSERT INTO orders (order_no, created_at, name, phone, address, area, payment, trx, note, items, subtotal, delivery, total, status, lang, discount, channel, delivery_mode, paid_amount, sold_by, via_courier, courier_cost)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'en',?,?,?,?,?,?,?)`).bind(orderNo, createdUtc, name, phone, str(b.address, 500), b.area === 'outside' ? 'outside' : 'inside', payment, str(b.trx, 40), str(b.note, 500),
+    JSON.stringify(lines), subtotal, delivery, total, mode === 'handover' ? 'delivered' : 'confirmed', discount, channel, custDue ? 'handover' : 'courier', paid, str(b.sold_by, 60) || user.name, mode === 'courier' ? 1 : 0, courierCost).run();
   // পাওয়া টাকা হিসাবে জমা (লাভে দুবার গোনা হয় না, কারণ বিক্রি অর্ডার থেকেই গোনা হয়)
   const salesCat = await D.prepare("SELECT id FROM acc_categories WHERE type = 'in' AND kind = 'revenue' ORDER BY sort, id LIMIT 1").first();
   if (pays.length) await D.batch(pays.map(p => D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, ref, note, source, created_by) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, 'order', ?)`)
     .bind(day, salesCat ? salesCat.id : null, p.amount, p.account_id, name, orderNo, `${CHANNELS[channel]} sale ${orderNo}`, user.name)));
-  await audit(env, user, 'ADD', 'sales', orderNo, `${CHANNELS[channel]} sale, ${lines.map(l => `${l.name} ${l.size} ×${l.qty}`).join(', ')}, total ${total}, paid ${paid}${total > paid ? ', due ' + (total - paid) : ''}`);
+  // কুরিয়ারকে দেওয়া টাকা Cash book-এ খরচ (Courier charge)। লাভে এটা অর্ডারের কুরিয়ার খরচ হিসেবেই একবার গোনা হয়।
+  if (courierFrom) {
+    const cc = await D.prepare("SELECT id FROM acc_categories WHERE type = 'out' AND kind = 'courier' ORDER BY sort, id LIMIT 1").first();
+    if (cc) await D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, ref, note, source, created_by) VALUES (?, 'out', ?, ?, ?, 'Courier', ?, ?, 'courier', ?)`)
+      .bind(day, cc.id, courierCost, courierFrom, orderNo, `Courier for ${orderNo} (${name})`, user.name).run();
+  }
+  await audit(env, user, 'ADD', 'sales', orderNo, `${CHANNELS[channel]} sale, ${lines.map(l => `${l.name} ${l.size} ×${l.qty}`).join(', ')}, total ${total}, paid ${paid}${total > paid ? ', due ' + (total - paid) : ''}${courierCost != null ? `, courier cost ${courierCost}${courierFrom ? ' paid now' : ' to be cut by courier'}` : ''}`);
   if (phone) await D.prepare("UPDATE abandoned SET status = 'recovered' WHERE phone = ?").bind(phone.replace(/\D/g, '').slice(-11)).run();
   return json({ ok: true, orderNo, total, paid, due: total - paid });
 }
@@ -2401,9 +2435,10 @@ async function editOrder(req, env, id, user) {
       ops.push(D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, ref, note, source, created_by) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, 'order', ?)`)
         .bind(bdNow().toISOString().slice(0, 10), cat ? cat.id : null, newPaid - oldPaid, acc.id, o.name || '', o.order_no, 'Payment received ' + o.order_no, user.name));
     }
-    if (newPaid !== oldPaid || o.delivery_mode !== 'handover') {
+    // আগে শুধু ঠিকানা বদলালেও কুরিয়ারের বিক্রি "হাতে হাতে" হয়ে যেত; এখন শুধু টাকার পরিমাণ বদলালে
+    if (newPaid !== oldPaid) {
       // বাকি কাস্টমার নিজে দেবে (কুরিয়ার না), তাই এটাকে "কাস্টমারের বাকি" ধরা হয়
-      ops.push(D.prepare("UPDATE orders SET paid_amount = ?, delivery_mode = 'handover' WHERE id = ?").bind(newPaid, id));
+      ops.push(D.prepare("UPDATE orders SET paid_amount = ?, via_courier = CASE WHEN delivery_mode = 'handover' THEN via_courier ELSE 1 END, delivery_mode = 'handover' WHERE id = ?").bind(newPaid, id));
       // কুরিয়ারের পাওনা হিসেবে আগে বসে থাকলে সেটা সরানো, নইলে দুবার গোনা হবে
       if (o.delivery_mode !== 'handover') ops.push(D.prepare("DELETE FROM acc_entries WHERE order_no = ? AND source = 'order'").bind(o.order_no));
       paidNote = `; money received ${oldPaid} → ${newPaid}${total > newPaid ? ', due ' + (total - newPaid) : ''}`;
@@ -2489,7 +2524,7 @@ async function dashExtras(env) {
   ]);
   const pctChange = (a, b) => b ? Math.round((a - b) / b * 100) : null;
   const fin = await getFinance(env);
-  const cRows = (await D.prepare(`SELECT area, delivery, delivery_mode, courier_cost, status FROM orders WHERE delivery_mode != 'handover' AND (status IN ('shipped', 'delivered') OR (status = 'cancelled' AND cancel_type = 'returned')) AND ${BD} BETWEEN ? AND ?`).bind(m0, today).all()).results;
+  const cRows = (await D.prepare(`SELECT area, delivery, delivery_mode, via_courier, courier_cost, status FROM orders WHERE (delivery_mode != 'handover' OR via_courier = 1) AND (status IN ('shipped', 'delivered') OR (status = 'cancelled' AND cancel_type = 'returned')) AND ${BD} BETWEEN ? AND ?`).bind(m0, today).all()).results;
   const courier = cRows.reduce((t, o) => { const c = courierCostOf(o, fin), ch = o.status === 'cancelled' ? 0 : o.delivery; t.cost += c; t.charged += ch; t.shopPaid += Math.max(0, c - ch); if (o.status !== 'cancelled' && !o.delivery) t.free++; return t; }, { cost: 0, charged: 0, shopPaid: 0, free: 0, n: cRows.length });
   const sv = await D.prepare('SELECT COALESCE(SUM(s.stock * COALESCE(p.cost, 0)), 0) AS v, COALESCE(SUM(s.stock * p.price), 0) AS retail, COALESCE(SUM(s.stock), 0) AS pcs FROM product_sizes s JOIN products p ON p.id = s.product_id WHERE p.active = 1 AND s.stock > 0').first();
   const fv = await D.prepare('SELECT COALESCE(SUM(stock * COALESCE(cost_per_gaj, 0)), 0) AS v, COALESCE(SUM(stock), 0) AS gaj FROM fabrics WHERE stock IS NOT NULL').first();
@@ -2529,12 +2564,15 @@ async function dailySummary(env, manual) {
   let profit = null;
   try { profit = (await profitReport(env, today, today, 'all', true)).net; } catch (e) { /* skip */ }
   const tk = n => 'BDT ' + Number(n || 0).toLocaleString('en-IN');
+  let ck = null;
+  try { ck = (await runCheckup(env)).count; } catch (e) { /* skip */ }
   const label = { website: 'Website', shop: 'Shop', facebook: 'Facebook', whatsapp: 'WhatsApp', phone: 'Phone', other: 'Other' };
   const sections = [
     [`🌙 Al Hadaf — ${today}${manual ? ' (test)' : ''}`],
     [`🛍 Sales today: ${cnt} · ${tk(sales)}`, ...ch.results.map(r => `   • ${label[r.ch] || r.ch}: ${r.n} · ${tk(r.v)}`),
       profit != null ? `💰 Profit today (before rent etc.): ${tk(profit)}` : '', cancels.n ? `✕ Cancelled/returned today: ${cancels.n}` : ''],
-    [`📦 To confirm: ${newO.n} · To ship: ${toShip.n}`, due.n ? `🧾 Due from customers: ${tk(due.v)} (${due.n})` : '', chats.n ? `💬 Chats waiting: ${chats.n}` : '', low.n ? `⚠️ Sizes almost out of stock: ${low.n}` : ''],
+    [`📦 To confirm: ${newO.n} · To ship: ${toShip.n}`, due.n ? `🧾 Due from customers: ${tk(due.v)} (${due.n})` : '', chats.n ? `💬 Chats waiting: ${chats.n}` : '', low.n ? `⚠️ Sizes almost out of stock: ${low.n}` : '',
+      ck && (ck.error || ck.warn) ? `🔎 Audit: ${ck.error} to fix, ${ck.warn} to check (Admin › Audit)` : ''],
     fu.results.length ? ['📞 Call tomorrow:', ...fu.results.map(f => `   • ${f.name || ''} ${f.phone}${f.follow_note ? ' — ' + f.follow_note : ''}`)] : []
   ];
   const lines = sections.map(sec => sec.filter(Boolean)).filter(sec => sec.length).map(sec => sec.join('\n')).join('\n\n');
@@ -2547,7 +2585,7 @@ async function dailySummary(env, manual) {
 // প্রতিটি পার্সেলে কুরিয়ারকে কত দিতে হয়: আলাদা করে লেখা থাকলে সেটা, নইলে এলাকা অনুযায়ী আপনার সেট করা রেট; দোকানে হাতে দেওয়া হলে ০
 function courierCostOf(o, fin) {
   if (o.courier_cost != null && o.courier_cost !== '') return Number(o.courier_cost) || 0;
-  if (o.delivery_mode === 'handover') return 0;
+  if (o.delivery_mode === 'handover' && !Number(o.via_courier)) return 0;
   return o.area === 'outside' ? fin.courier_outside : fin.courier_inside;
 }
 
@@ -2557,8 +2595,8 @@ async function courierReport(env, url) {
   const to = ok(url.searchParams.get('to')) ? url.searchParams.get('to') : today;
   const from = ok(url.searchParams.get('from')) ? url.searchParams.get('from') : to.slice(0, 8) + '01';
   const [rows, fin, recorded] = await Promise.all([
-    D.prepare(`SELECT id, order_no, ${BD} AS day, name, phone, area, status, cancel_type, delivery, total, coupon, discount, courier_cost, delivery_mode, consignment, COALESCE(channel, 'website') AS channel
-      FROM orders WHERE delivery_mode != 'handover' AND (status IN ('shipped', 'delivered') OR (status = 'cancelled' AND cancel_type = 'returned')) AND ${BD} BETWEEN ? AND ? ORDER BY id DESC LIMIT 5000`).bind(from, to).all(),
+    D.prepare(`SELECT id, order_no, ${BD} AS day, name, phone, area, status, cancel_type, delivery, total, coupon, discount, courier_cost, delivery_mode, via_courier, consignment, COALESCE(channel, 'website') AS channel
+      FROM orders WHERE (delivery_mode != 'handover' OR via_courier = 1) AND (status IN ('shipped', 'delivered') OR (status = 'cancelled' AND cancel_type = 'returned')) AND ${BD} BETWEEN ? AND ? ORDER BY id DESC LIMIT 5000`).bind(from, to).all(),
     getFinance(env),
     D.prepare(`SELECT COALESCE(SUM(e.amount), 0) AS v FROM acc_entries e JOIN acc_categories c ON c.id = e.category_id WHERE c.kind = 'courier' AND e.day BETWEEN ? AND ?`).bind(from, to).first()
   ]);
@@ -2664,4 +2702,238 @@ async function reviewPhoto(req, env) {
   const key = `r-${crypto.randomUUID()}.${ext}`;
   await env.IMAGES.put(key, buf, { metadata: { type } });
   return json({ key, url: '/img/' + key });
+}
+
+
+// ================= v14: Audit — অর্ডার, হিসাব, স্টক আর সেটিংসে ভুল খোঁজা =================
+// প্রতিটি সমস্যায়: level (error = ঠিক করতেই হবে, warn = দেখে নিন, info = জানার জন্য), কোথায়, কী হয়েছে, কীভাবে ঠিক করবেন,
+// আর কোন অর্ডার/এন্ট্রি/পাতা খুলতে হবে। কিছু সমস্যা "Fix now" দিয়ে এক চাপে ঠিক হয়।
+const CK_NOT_STOCK = /(ফ্যান|\bfan\b|ইলেক|electric|টেবিল|table|চেয়ার|chair|টুল|ঝাড়ু|ঝুড়ি|ম্যাট|পাপোশ|সকেট|socket|অঙ্গেল|angle|মেশিন|machine|হেঙ্গার|hanger|কেঁচি|scissor|আয়রন(?! কাপড়)|\biron\b)/i;
+const CK_NOT_ASSET = /(ভাড়া|\brent\b|হাদিয়া|হাদীয়া|নাস্তা|সার্ভিসিং|servic|মেকার|repair|মজুরি|bill)/i;
+
+// একটা অর্ডার থেকে Cash book-এ মোট কত টাকা থাকার কথা
+function ckExpected(o) {
+  if (o.status === 'cancelled') return 0;
+  const manual = (o.channel || 'website') !== 'website' || o.delivery_mode === 'handover';
+  let v = manual ? o.paid_amount || 0 : 0;
+  if (o.status === 'delivered' && o.delivery_mode !== 'handover') v += Math.max(0, o.total - (manual ? o.paid_amount || 0 : 0));
+  return v;
+}
+
+async function runCheckup(env) {
+  const D = env.DB, today = bdNow().toISOString().slice(0, 10);
+  const [ordersR, entriesR, catsR, accsR, partnersR, sizesR, prodsR, fabsR] = await Promise.all([
+    D.prepare(`SELECT id, order_no, date(created_at, '+6 hours') AS day, name, address, area, status, cancel_type, COALESCE(channel, 'website') AS channel, delivery_mode, via_courier,
+      payment, paid, paid_amount, items, subtotal, delivery, discount, bundle_off, total FROM orders ORDER BY id`).all(),
+    D.prepare('SELECT * FROM acc_entries ORDER BY day, id').all(),
+    D.prepare('SELECT * FROM acc_categories').all(),
+    D.prepare('SELECT * FROM acc_accounts').all(),
+    D.prepare('SELECT * FROM acc_partners').all(),
+    D.prepare('SELECT s.id, s.label, s.stock, p.code, p.name_en FROM product_sizes s JOIN products p ON p.id = s.product_id').all(),
+    D.prepare('SELECT p.id, p.code, p.name_en, p.color_en, p.cost, p.active, (SELECT COALESCE(SUM(stock), 0) FROM product_sizes WHERE product_id = p.id) AS stock FROM products p').all(),
+    D.prepare('SELECT id, name_en, color_en, stock, cost_per_gaj FROM fabrics').all()
+  ]);
+  const s = await accSettings(env), cut = s.old_until || '';
+  const orders = ordersR.results, entries = entriesR.results;
+  const cat = Object.fromEntries(catsR.results.map(c => [c.id, c])), acc = Object.fromEntries(accsR.results.map(a => [a.id, a]));
+  const prodByCode = Object.fromEntries(prodsR.results.map(p => [p.code, p]));
+  const tk = n => 'BDT ' + Number(n || 0).toLocaleString('en-IN');
+  const items = [];
+  const add = (level, area, title, detail, fix, extra = {}) => items.push({ id: items.length + 1, level, area, title, detail, fix, ...extra });
+
+  // ---------- ১. অর্ডার বনাম Cash book: অর্ডারে যত টাকা পাওয়া লেখা, হিসাবে ঠিক তত জমা আছে কি না ----------
+  const byOrder = {};
+  for (const e of entries) {
+    if (e.source !== 'order') continue;
+    const k = e.order_no || e.ref; if (!k) continue;
+    (byOrder[k] = byOrder[k] || []).push(e);
+  }
+  const orderNos = new Set(orders.map(o => o.order_no));
+  for (const o of orders) {
+    const linked = byOrder[o.order_no] || [];
+    const actual = linked.reduce((t, e) => t + (e.type === 'in' ? e.amount : -e.amount), 0);
+    const manual = o.channel !== 'website' || o.delivery_mode === 'handover', expected = ckExpected(o);
+    if (expected === actual) continue;
+    const ids = linked.map(e => e.id);
+    if (o.status === 'cancelled') {
+      add('error', 'money', `${o.order_no}: cancelled, but its money is still in the Cash book`, `${o.name || 'Customer'}: the order is cancelled, yet ${tk(actual)} from it is still counted as joma.`,
+        'If the money was given back, press “Remove the money”. If the sale actually happened, change the order status back instead.', { order: o.order_no, entries: ids, fixKey: 'match:' + o.order_no, fixLabel: 'Remove the money' });
+    } else if (!linked.length && o.status === 'delivered' && !manual) {
+      const old = cut && o.day <= cut;
+      add(old ? 'warn' : 'error', 'money', `${o.order_no}: delivered, but the sale is not in Accounts`, `${o.name || 'Customer'} · ${tk(o.total)} · ${o.day}.${old ? ' This is from before the switch to the website accounts, so it may already be in the Cash book from the Google Sheet.' : ''}`,
+        old ? 'If the Google Sheet import already has this sale, ignore this. If not, press “Post the sale”.' : 'Press “Post the sale” to add it to Accounts.', { order: o.order_no, fixKey: 'post:' + o.order_no, fixLabel: 'Post the sale' });
+    } else {
+      add('error', 'money', `${o.order_no}: order and Cash book don’t match (${tk(Math.abs(expected - actual))} difference)`,
+        `${o.name || 'Customer'}: the order says ${tk(expected)} was received, but the Cash book has ${tk(actual)}${ids.length ? ` (${ids.map(i => 'TX-' + i).join(', ')})` : ''}.`,
+        `Find out which one is right. If the order is right, press “Match the order” and the Cash book becomes ${tk(expected)}. If the Cash book is right, open the order › Edit order › Money received.`,
+        { order: o.order_no, entries: ids, fixKey: 'match:' + o.order_no, fixLabel: 'Match the order' });
+    }
+  }
+  const zero = entries.filter(e => e.source === 'order' && e.amount === 0);
+  if (zero.length) add('info', 'money', `${zero.length} empty BDT 0 entr${zero.length === 1 ? 'y' : 'ies'} in the Cash book`, `Made automatically for sales that were already fully paid (${zero.map(e => 'TX-' + e.id).join(', ')}). They don’t change any total, they are just clutter.`,
+    'Press “Remove empty entries”.', { entries: zero.map(e => e.id), fixKey: 'zero', fixLabel: 'Remove empty entries' });
+  for (const [k, list] of Object.entries(byOrder)) {
+    if (orderNos.has(k)) continue;
+    const v = list.reduce((t, e) => t + e.amount, 0);
+    if (v) add('warn', 'money', `Money for order ${k}, but the order no longer exists`, `${list.map(e => 'TX-' + e.id).join(', ')} · ${tk(v)}. The order was deleted but its money stayed in the Cash book.`,
+      'If the sale did not happen, delete the entry. If it did, keep it and add a note.', { entries: list.map(e => e.id) });
+  }
+
+  // ---------- ২. অর্ডারের যোগফল ----------
+  for (const o of orders) {
+    let lines = []; try { lines = JSON.parse(o.items || '[]'); } catch (e) { /* bad json */ }
+    const sum = lines.reduce((t, l) => t + (Number(l.price) || 0) * (Number(l.qty) || 0), 0);
+    const want = Math.max(0, (o.subtotal || 0) + (o.delivery || 0) - (o.discount || 0) - (o.bundle_off || 0));
+    if (sum !== o.subtotal || want !== o.total) add('error', 'orders', `${o.order_no}: total doesn’t add up`,
+      `Items add up to ${tk(sum)}, subtotal is ${tk(o.subtotal)}, and subtotal + delivery − discount = ${tk(want)}, but the total says ${tk(o.total)}.`,
+      'Open the order › Edit order and press Save once. The total is worked out again.', { order: o.order_no });
+    if (o.status !== 'cancelled' && (o.paid_amount || 0) > o.total) add('warn', 'orders', `${o.order_no}: received more than the total`,
+      `Received ${tk(o.paid_amount)} on a ${tk(o.total)} order. ${tk(o.paid_amount - o.total)} should go back to the customer.`, 'Give the extra back, then lower Money received in Edit order.', { order: o.order_no });
+    if (o.day > today) add('warn', 'orders', `${o.order_no}: date is in the future (${o.day})`, 'Reports for today and this month won’t count it yet.', 'Open Edit order and fix the date.', { order: o.order_no });
+  }
+
+  // ---------- ৪. অ্যাকাউন্টের ব্যালেন্স কোনো দিন মাইনাসে গেছে কি না ----------
+  const run = {}, low = {};
+  for (const a of accsR.results) run[a.id] = a.opening || 0;
+  for (const e of entries) {
+    if (e.type === 'transfer') { run[e.account_id] = (run[e.account_id] || 0) - e.amount; run[e.to_account_id] = (run[e.to_account_id] || 0) + e.amount; }
+    else run[e.account_id] = (run[e.account_id] || 0) + (e.type === 'in' ? e.amount : -e.amount);
+    for (const k of [e.account_id, e.to_account_id]) if (k && run[k] < 0 && (!low[k] || run[k] < low[k].v)) low[k] = { v: run[k], day: e.day, id: e.id };
+  }
+  for (const [k, l] of Object.entries(low)) add('error', 'cashbook', `${(acc[k] || {}).name || 'An account'} went below zero`,
+    `On ${l.day} (TX-${l.id}) the balance was ${tk(l.v)}. You can’t spend money you don’t have, so an entry is missing, dated wrong, or in the wrong account.`,
+    'Check the entries around that date. Usually a joma was not written, or a khoroch was put in the wrong account.', { entries: [l.id], page: 'accounts/book' });
+
+  // ---------- ৫. Cash book এন্ট্রির নিজস্ব ভুল ----------
+  const seen = {};
+  for (const e of entries) {
+    const c = cat[e.category_id];
+    if (e.type === 'transfer') {
+      if (!e.to_account_id || e.to_account_id === e.account_id) add('error', 'cashbook', `TX-${e.id}: transfer to the same account`, `${e.day} · ${tk(e.amount)}. A transfer must go from one account to a different one.`, 'Open the entry and choose the right To account.', { entries: [e.id] });
+    } else if (!c) add('error', 'cashbook', `TX-${e.id}: no category`, `${e.day} · ${tk(e.amount)} · ${e.note || ''}. It is left out of profit and the category totals.`, 'Open the entry and choose a category.', { entries: [e.id] });
+    else if ((c.kind === 'capital' || c.kind === 'payout') && !e.partner_id) add('error', 'shareholders', `TX-${e.id}: ${c.name} without a shareholder`,
+      `${e.day} · ${tk(e.amount)}. Nobody’s balance includes it, so the shareholder totals are off.`, 'Open the entry and choose the shareholder.', { entries: [e.id] });
+    if (e.day > today) add('warn', 'cashbook', `TX-${e.id}: date is in the future (${e.day})`, `${tk(e.amount)} · ${e.note || ''}`, 'Open the entry and fix the date.', { entries: [e.id] });
+    if (e.source !== 'order' && e.amount > 0) {
+      const key = [e.day, e.type, e.amount, e.account_id, e.category_id, (e.note || '').trim(), (e.person || '').trim()].join('|');
+      if (seen[key]) add('warn', 'cashbook', `TX-${seen[key]} and TX-${e.id} look like the same entry twice`, `${e.day} · ${tk(e.amount)} · ${e.note || e.person || ''}`, 'If it was entered twice, delete one of them.', { entries: [seen[key], e.id] });
+      else seen[key] = e.id;
+    }
+    // হাতে লেখা "Sales" জমা: নতুন নিয়মে এটা অর্ডারের বিক্রির পাশে আলাদা আয় হিসেবে গোনা হয়
+    if (c && c.kind === 'revenue' && e.source !== 'order' && (!cut || e.day > cut)) add('warn', 'cashbook', `TX-${e.id}: sale written by hand in the Cash book`,
+      `${e.day} · ${tk(e.amount)} · ${e.note || e.person || ''}. It counts as extra income on top of orders, and stock and the customer’s history don’t change.`,
+      'Delete it and enter the sale in Sales › New sale instead, unless it is income that is not a product sale.', { entries: [e.id] });
+  }
+
+  // ---------- ৬. খরচের খাত ঠিক আছে কি না ----------
+  const oldWrong = [];
+  for (const e of entries) {
+    const c = cat[e.category_id]; if (!c || e.type !== 'out') continue;
+    const txt = `${e.note || ''} ${e.person || ''}`;
+    let why = '';
+    if (c.kind === 'stock' && CK_NOT_STOCK.test(txt)) why = `is under “${c.name}” (material that becomes thobes), but sounds like equipment or a running cost. Equipment goes under Machine, the rest under Others.`;
+    else if (c.kind === 'asset' && CK_NOT_ASSET.test(txt)) why = `is under “${c.name}” (equipment), but mentions rent, fare, gifts, servicing or wages. That part is a running cost.`;
+    if (!why) continue;
+    if (cut && e.day <= cut) { oldWrong.push(e.id); continue; }
+    add('warn', 'cashbook', `TX-${e.id}: maybe the wrong category`, `${e.day} · ${tk(e.amount)} · “${e.note || ''}” ${why}`,
+      'Open the entry and change the category. If one payment mixes both, split it into two entries.', { entries: [e.id] });
+  }
+  if (oldWrong.length) add('info', 'cashbook', `${oldWrong.length} older entries may be in the wrong category`,
+    `${oldWrong.map(i => 'TX-' + i).join(', ')}. They are dated up to ${cut}, when profit was “sales − all khoroch”, so profit is not affected. Only the stock and machine totals look bigger than they are.`,
+    'Optional: fix them so the Stock and Machine totals are right. From now on, enter fans, tools and furniture under Machine, and rent or snacks under Others.', { entries: oldWrong.slice(0, 40) });
+  const norm = n => String(n || '').toLowerCase().replace(/[^a-z\u0980-\u09ff]+/g, ' ').trim().split(' ').filter(Boolean).map(w => w.replace(/s$/, ''));
+  const act = catsR.results.filter(c => c.active);
+  for (let i = 0; i < act.length; i++) for (let j = i + 1; j < act.length; j++) {
+    const a = act[i], b = act[j]; if (a.type !== b.type) continue;
+    const A = norm(a.name), B = norm(b.name); if (!A.length || !B.length) continue;
+    const same = A.join(' ') === B.join(' '), sub = !same && (A.every(w => B.includes(w)) || B.every(w => A.includes(w)));
+    if (same || sub) add(same ? 'warn' : 'info', 'settings', `Categories “${a.name}” and “${b.name}” ${same ? 'are the same' : 'overlap'}`,
+      `${same ? 'Two categories with the same name split one kind of khoroch into two totals.' : 'People may pick either one for the same thing.'}${a.kind !== b.kind ? ` They also count differently (${a.kind} vs ${b.kind}).` : ''}`,
+      'Accounts › Settings: keep one, turn the other off, and move its entries over when you have time.', { page: 'accounts/settings' });
+  }
+
+  // ---------- ৭. শেয়ারহোল্ডার ----------
+  const activeP = partnersR.results.filter(p => p.active);
+  if (s.profit_rule === 'custom') {
+    const pct = activeP.reduce((t, p) => t + (Number(p.share_pct) || 0), 0);
+    if (Math.round(pct) !== 100) add('error', 'shareholders', `Profit shares add up to ${pct}%, not 100%`, 'With “set percentages”, each partner’s share of profit is wrong until they add up to 100%.', 'Accounts › Shareholders: fix each person’s %.', { page: 'accounts/partners' });
+  }
+
+  // ---------- ৮. স্টক আর কেনা দাম ----------
+  for (const z of sizesR.results) if (z.stock < 0) add('error', 'stock', `${z.code} size ${z.label}: stock is ${z.stock}`, `${z.name_en}. More was sold than was in stock.`, 'Count it and set the real stock in Products.', { page: 'products' });
+  for (const f of fabsR.results) if (f.stock != null && f.stock < 0) add('error', 'stock', `Fabric ${f.name_en}${f.color_en ? ' · ' + f.color_en : ''}: stock is ${f.stock} gaj`, 'More was used than was in stock.', 'Measure it and set the real gaj in Tailoring › Fabrics.', { page: 'custom' });
+  const noCost = prodsR.results.filter(p => p.active && p.cost == null && p.stock > 0);
+  if (noCost.length) add('warn', 'stock', `${noCost.length} product${noCost.length > 1 ? 's' : ''} without a cost price`, `${noCost.map(p => p.code).join(', ')}. When these sell, profit counts the whole price as profit.`, 'Products › open each one › Cost price.', { page: 'products' });
+  const fabNoCost = fabsR.results.filter(f => f.stock > 0 && f.cost_per_gaj == null);
+  if (fabNoCost.length) add('info', 'stock', `${fabNoCost.length} fabric${fabNoCost.length > 1 ? 's' : ''} without a cost per gaj`, `${fabNoCost.map(f => f.name_en + (f.color_en ? ' · ' + f.color_en : '')).join(', ')}. Stock worth and custom thobe profit leave them out.`, 'Tailoring › Fabrics › Cost per gaj.', { page: 'custom' });
+  for (const o of orders) {
+    if (o.status === 'cancelled' || (cut && o.day <= cut)) continue;
+    let lines = []; try { lines = JSON.parse(o.items || '[]'); } catch (e) { /* skip */ }
+    const miss = lines.filter(l => l.cost == null && !l.custom && !(prodByCode[l.code] && prodByCode[l.code].cost != null));
+    if (miss.length) add('warn', 'stock', `${o.order_no}: item without a cost`, `${miss.map(l => l.name).join(', ')}. Profit counts the full price of ${tk(miss.reduce((t, l) => t + l.price * l.qty, 0))} as profit.`,
+      'Set the cost price on the product (Products › Cost price). For “other” items, write the cost when you enter the sale.', { order: o.order_no });
+  }
+
+  // ---------- ৯. পুরনো বাকি ----------
+  const lateDue = orders.filter(o => o.status !== 'cancelled' && o.delivery_mode === 'handover' && o.total > (o.paid_amount || 0) && (Date.parse(today) - Date.parse(o.day)) / 864e5 > 30);
+  for (const o of lateDue) add('info', 'orders', `${o.order_no}: ${tk(o.total - (o.paid_amount || 0))} due for over a month`, `${o.name || 'Customer'} · sold on ${o.day}.`, 'Call the customer, then use Collect due when the money comes.', { order: o.order_no });
+  // হাতে-হাতে বিক্রি অনেক দিন "Shipped" অবস্থায়
+  for (const o of orders) if (o.status === 'shipped' && (Date.parse(today) - Date.parse(o.day)) / 864e5 > 14) add('info', 'orders', `${o.order_no}: shipped ${Math.round((Date.parse(today) - Date.parse(o.day)) / 864e5)} days ago, still not delivered`,
+    `${o.name || 'Customer'} · ${tk(o.total)}. Profit (delivered only) and the courier money wait until it is marked Delivered.`, 'Check with the courier. Mark it Delivered, or Cancelled › Returned.', { order: o.order_no });
+
+  const order = { error: 0, warn: 1, info: 2 };
+  items.sort((a, b) => order[a.level] - order[b.level]);
+  const count = { error: items.filter(i => i.level === 'error').length, warn: items.filter(i => i.level === 'warn').length, info: items.filter(i => i.level === 'info').length };
+  return { ranAt: new Date().toISOString(), count, items, oldUntil: cut };
+}
+
+async function checkupFix(req, env, user) {
+  if (!['super', 'admin'].includes(user.role)) return bad('Only an admin can fix things from the audit.', 403);
+  const D = env.DB, b = await readJson(req) || {}, key = str(b.key, 80);
+  if (key === 'zero') {
+    const r = await D.prepare("DELETE FROM acc_entries WHERE source = 'order' AND amount = 0").run();
+    await audit(env, user, 'DELETE', 'acc', 'audit', `Audit: removed ${r.meta.changes} empty BDT 0 entries`);
+    return json({ ok: true, message: `${r.meta.changes} empty entries removed` });
+  }
+  if (key.startsWith('post:')) {
+    const no = key.slice(5);
+    const o = await D.prepare("SELECT * FROM orders WHERE order_no = ? AND status = 'delivered' AND delivery_mode != 'handover'").bind(no).first();
+    if (!o) return bad('That order is not a delivered courier order any more.');
+    const has = await D.prepare("SELECT COUNT(*) AS n FROM acc_entries WHERE source = 'order' AND (order_no = ? OR ref = ?)").bind(no, no).first();
+    if (has.n) return bad('This sale is already in Accounts.');
+    await postOrderSale(env, o);
+    await audit(env, user, 'ADD', 'acc', no, 'Audit: posted delivered sale to Accounts');
+    return json({ ok: true, message: `Sale ${no} posted to Accounts` });
+  }
+  if (key.startsWith('match:')) {
+    const no = key.slice(6);
+    const o = await D.prepare('SELECT * FROM orders WHERE order_no = ?').bind(no).first();
+    if (!o) return bad('Order not found.', 404);
+    const linked = (await D.prepare("SELECT * FROM acc_entries WHERE source = 'order' AND (order_no = ? OR ref = ?) ORDER BY id").bind(no, no).all()).results;
+    const actual = linked.reduce((t, e) => t + (e.type === 'in' ? e.amount : -e.amount), 0), want = ckExpected(o), diff = want - actual;
+    if (!diff) return json({ ok: true, message: 'Already matching' });
+    let note;
+    if (want === 0) {
+      await D.prepare("DELETE FROM acc_entries WHERE source = 'order' AND (order_no = ? OR ref = ?)").bind(no, no).run();
+      note = `removed ${linked.length} entr${linked.length === 1 ? 'y' : 'ies'} (${actual} tk)`;
+    } else {
+      // হাতে পাওয়া টাকার এন্ট্রি (ref = অর্ডার নম্বর) আগে, তারপর কুরিয়ারের পাওনা; ০ টাকার এন্ট্রি বাদ
+      const ok = e => e.type === 'in' && e.amount > 0 && e.amount + diff > 0;
+      const last = [...linked].reverse().find(e => ok(e) && e.ref === no && !e.order_no) || [...linked].reverse().find(ok);
+      if (last) {
+        await D.prepare('UPDATE acc_entries SET amount = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(last.amount + diff, user.name, last.id).run();
+        note = `TX-${last.id} ${last.amount} → ${last.amount + diff}`;
+      } else {
+        const sales = await D.prepare("SELECT id FROM acc_categories WHERE type = 'in' AND kind = 'revenue' ORDER BY sort, id LIMIT 1").first();
+        const cash = await D.prepare("SELECT id FROM acc_accounts WHERE kind = 'cash' ORDER BY sort, id LIMIT 1").first();
+        if (!sales || !cash || diff < 0) return bad('Could not match it automatically. Fix the entries by hand.');
+        await D.prepare(`INSERT INTO acc_entries (day, type, category_id, amount, account_id, person, ref, note, source, created_by) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, 'order', ?)`)
+          .bind(bdNow().toISOString().slice(0, 10), sales.id, diff, cash.id, o.name || '', no, 'Audit: matched to order ' + no, user.name).run();
+        note = `added ${diff} tk in Cash`;
+      }
+    }
+    await audit(env, user, 'EDIT', 'acc', no, `Audit: Cash book matched to order (${actual} → ${want}), ${note}`);
+    return json({ ok: true, message: `Cash book for ${no} is now BDT ${want}` });
+  }
+  return bad('Nothing to fix for this item.');
 }

@@ -91,7 +91,7 @@
   const canRead = r => ME.perms.read.includes(r), canWrite = r => ME.perms.write.includes(r);
   const TAB_PERM = { courier: 'courier-report', sales: 'sales', dashboard: 'stats', orders: 'orders', abandoned: 'abandoned', chats: 'chats', customers: 'customers', accounts: 'acc', reports: 'report',
     products: 'products', custom: 'custom', gallery: 'gallery', categories: 'categories', banners: 'banners', coupons: 'coupons', reviews: 'reviews',
-    settings: 'settings', team: 'users', activity: 'audit' };
+    settings: 'settings', team: 'users', activity: 'audit', checkup: 'checkup' };
   function applyPerms() {
     document.querySelectorAll('#tabs a[data-tab]').forEach(a => { a.hidden = !canRead(TAB_PERM[a.dataset.tab] || a.dataset.tab); });
     document.querySelectorAll('#tabs .side-sep').forEach(sep => {
@@ -166,7 +166,7 @@
       products: viewProducts, product: () => viewProductEdit(arg), custom: viewCustom, gallery: viewGallery,
       categories: viewCategories, settings: viewSettings, coupons: viewCoupons, reviews: viewReviews,
       abandoned: viewAbandoned, banners: viewBanners, reports: viewReports,
-      accounts: () => viewAccounts(arg || 'overview'), team: viewTeam, activity: viewActivity, sales: () => viewSales(arg), courier: viewCourier
+      accounts: () => viewAccounts(arg || 'overview'), team: viewTeam, activity: viewActivity, sales: () => viewSales(arg), courier: viewCourier, checkup: viewCheckup
     };
     (views[tab] || viewDashboard)().catch(fail);
   }
@@ -177,6 +177,47 @@
     if (!a) return;
     orderFilter = a.dataset.st || ''; orderQuery = a.dataset.q || ''; orderCustom = a.hasAttribute('data-custom'); orderFrom = orderTo = '';
   });
+
+  // ================= AUDIT =================
+  // অর্ডার, Cash book, কুরিয়ার, স্টক আর সেটিংস মিলিয়ে দেখে কোথায় ভুল আছে বলে দেয়
+  let ckFilter = 'all';
+  function setAuditBadge(c) { const b = $('#bAudit'); if (!b || !c) return; const n = c.error + c.warn; b.textContent = n; b.hidden = !n; b.classList.toggle('err', c.error > 0); }
+  const CK_AREA = { money: 'Orders and money', orders: 'Orders', courier: 'Courier', cashbook: 'Cash book', shareholders: 'Shareholders', stock: 'Stock and costs', settings: 'Settings' };
+  const CK_PAGE = { 'accounts/settings': 'Open Accounts settings', 'accounts/partners': 'Open Shareholders', 'accounts/book': 'Open Cash book', products: 'Open Products', custom: 'Open Tailoring' };
+  const CK_LV = { error: ['Must fix', 'The numbers are wrong until this is fixed'], warn: ['Check', 'May be wrong, worth a look'], info: ['Notes', 'Good to know, nothing is broken'] };
+  async function viewCheckup() {
+    const d = await api('checkup');
+    setAuditBadge(d.count);
+    const canFix = ['super', 'admin'].includes(ME.user.role);
+    const list = d.items.filter(i => ckFilter === 'all' || i.level === ckFilter);
+    const groups = Object.keys(CK_AREA).map(a => [a, list.filter(i => i.area === a)]).filter(([, l]) => l.length);
+    const item = i => `<article class="ck-item lv-${i.level}">
+        <span class="ck-lv">${CK_LV[i.level][0]}</span>
+        <div class="ck-main"><h3>${esc(i.title)}</h3><p>${esc(i.detail)}</p><p class="ck-how"><b>How to fix:</b> ${esc(i.fix)}</p>
+        <div class="ck-acts">${i.order ? `<a class="btn ghost sm" href="#orders" data-q="${esc(i.order)}">Open order ${esc(i.order)}</a>` : ''}${(i.entries || []).slice(0, 8).map(id => `<button type="button" class="btn ghost sm" data-tx="${id}">Open TX-${id}</button>`).join('')}${(i.entries || []).length > 8 ? `<span class="muted small">+${i.entries.length - 8} more</span>` : ''}${i.page ? `<a class="btn ghost sm" href="#${esc(i.page)}">${CK_PAGE[i.page] || 'Open page'}</a>` : ''}${i.fixKey && canFix ? `<button type="button" class="btn primary sm" data-fix="${esc(i.fixKey)}" data-label="${esc(i.fixLabel || 'Fix now')}">${esc(i.fixLabel || 'Fix now')}</button>` : ''}</div></div></article>`;
+    $('#main').innerHTML = `<div class="vroot">
+      <div class="page-head"><div><h1>Audit</h1><p class="muted">Checks that orders, the cash book, courier costs, stock and settings agree with each other. Checked ${ago(d.ranAt.slice(0, 19).replace('T', ' '))}.</p></div><button class="btn primary" id="ckRun">Run again</button></div>
+      <div class="ck-sum">${['error', 'warn', 'info'].map(l => `<button type="button" class="ck-tile lv-${l}" data-ckf="${l}" aria-pressed="${ckFilter === l}"><b>${d.count[l]}</b><span>${CK_LV[l][0]}</span><small>${CK_LV[l][1]}</small></button>`).join('')}</div>
+      ${ckFilter !== 'all' ? `<p class="ck-showing">Showing only “${CK_LV[ckFilter][0]}”. <button type="button" class="text-btn" data-ckf="all">Show everything</button></p>` : ''}
+      ${!d.items.length ? '<section class="card ck-clear"><h2>No problems found</h2><p class="muted">Every order matches the cash book, no account went below zero, and stock and settings look right.</p></section>'
+        : !list.length ? '<p class="empty">Nothing in this group.</p>'
+        : groups.map(([a, l]) => `<section class="ck-group"><h2>${CK_AREA[a]} <span class="muted">${l.length}</span></h2>${l.map(item).join('')}</section>`).join('')}
+      ${d.oldUntil ? `<p class="muted small ck-foot">Profit up to ${esc(d.oldUntil)} uses the old Google Sheet rule (sales − all khoroch), so category mistakes before that date don’t change profit.</p>` : ''}
+      <dialog class="adlg" id="entryDlg"></dialog></div>`;
+    $('#ckRun').onclick = () => route();
+    $('#main .vroot').addEventListener('click', async e => {
+      const f = e.target.closest('[data-ckf]');
+      if (f) { ckFilter = ckFilter === f.dataset.ckf ? 'all' : f.dataset.ckf; viewCheckup().catch(fail); return; }
+      const tx = e.target.closest('[data-tx]');
+      if (tx) { try { ACC = await api('acc/meta'); const r = await api('acc/entries?q=TX-' + tx.dataset.tx); if (r.rows[0]) openEntry(r.rows[0]); else toast('That entry no longer exists', true); } catch (err) { fail(err); } return; }
+      const fx = e.target.closest('[data-fix]');
+      if (fx) {
+        if (!confirm(`${fx.dataset.label}? This is written in the activity log.`)) return;
+        fx.disabled = true;
+        try { const r = await api('checkup', { method: 'POST', body: { key: fx.dataset.fix } }); toast(r.message || 'Fixed'); viewCheckup().catch(fail); } catch (err) { fx.disabled = false; fail(err); }
+      }
+    });
+  }
 
   // ================= DASHBOARD =================
   async function viewDashboard() {
@@ -204,6 +245,7 @@
         <div class="kpi"><span>Last 30 days</span><strong>${money(d.month.rev)}</strong><small>${plural(d.month.n, 'order')}</small></div>
         <a class="kpi kpi-link" href="#reports"><span>Profit this month</span><strong class="${d.monthProfit.net < 0 ? 'neg' : ''}">${money(d.monthProfit.net)}</strong><small>${d.monthProfit.margin}% margin · avg order ${money(aov)}${d.monthProfit.missing ? ` · <em class="down">${d.monthProfit.missing} without cost</em>` : ''}</small></a>
       </div>
+      ${canRead('checkup') ? '<a class="card ck-dash" href="#checkup" id="ckDash"><i class="ck-dot"></i><span><b>Audit</b><span class="muted block" id="ckDashTxt">Checking orders and accounts…</span></span><span class="ck-go">Open audit</span></a>' : ''}
       <div class="dash-top">
         <section class="card goal-card"><div class="card-head"><h2>This month’s target</h2>${canWrite('goals') ? '<button class="text-btn" id="setGoal">Set target</button>' : ''}</div>
           ${d.goal.target ? `<p class="goal-num"><b>${money(d.goal.sold)}</b> of ${money(d.goal.target)}</p><div class="cap-bar"><i style="--w:${Math.min(100, Math.round(d.goal.sold / d.goal.target * 100))}%"></i></div>
@@ -246,6 +288,14 @@
   }
 
   function bindDash() {
+    if ($('#ckDash')) api('checkup').then(c => {
+      const el = $('#ckDash'); if (!el) return;
+      setAuditBadge(c.count);
+      const n = c.count.error, w = c.count.warn;
+      el.classList.add(n ? 'lv-error' : w ? 'lv-warn' : 'lv-ok');
+      $('#ckDashTxt').textContent = n ? `${n} mistake${n > 1 ? 's' : ''} to fix${w ? `, ${w} thing${w > 1 ? 's' : ''} to check` : ''}. Open to see where.`
+        : w ? `No mistakes. ${w} thing${w > 1 ? 's' : ''} to check.` : 'No problems found. Orders, cash book and stock agree.';
+    }).catch(() => { const t = $('#ckDashTxt'); if (t) t.textContent = 'Could not run the audit. Open it to try again.'; });
     const g = $('#setGoal');
     if (g) g.onclick = async () => { const v = prompt('Sales target for this month (BDT)', ''); if (v == null) return; try { await api('goals', { method: 'PUT', body: { month_target: v } }); toast('Target saved'); route(); } catch (e) { fail(e); } };
     const dl = $('#dueLink'); if (dl) dl.onclick = () => { setTimeout(() => {}, 0); orderDue = true; };
@@ -1743,19 +1793,21 @@
     const accs = ACC.accounts.filter(a => a.active || a.id === e.account_id || a.id === e.to_account_id);
     const partners = ACC.partners.filter(p => p.active || p.id === e.partner_id);
     let attachment = e.attachment || '';
-    dlg.innerHTML = `<form class="adlg-body entry-form t-${type}" id="entryForm">
+    const linked = e.id && e.source === 'order';
+    dlg.innerHTML = `<form class="adlg-body entry-form t-${type}${linked ? ' linked' : ''}" id="entryForm">
       <div class="adlg-head"><div><h2>${e.id ? 'Edit TX-' + e.id : { in: 'New joma', out: 'New khoroch', transfer: 'Move money between accounts' }[type]}</h2>
         ${e.id ? `<p class="muted small">Added by ${esc(e.created_by || '—')}${e.updated_by ? ` · last edit ${esc(e.updated_by)}` : ''}${e.source === 'order' ? ` · from website order ${esc(e.order_no)}` : ''}</p>` : ''}</div><button type="button" class="icon" data-x aria-label="Close">×</button></div>
-      <div class="type-seg">${[['in', 'Joma'], ['out', 'Khoroch'], ['transfer', 'Transfer']].map(([k, l]) => `<button type="button" data-tsw="${k}" aria-pressed="${type === k}">${l}</button>`).join('')}</div>
+      ${linked ? `<p class="ck-lock">This money is linked to order <a href="#orders" data-q="${esc(e.order_no || e.ref)}">${esc(e.order_no || e.ref)}</a>. The amount and category can only change from the order (Edit order or Collect due), so the order and the cash book always agree. You can still change the date, account, note and receipt.</p>` : ''}
+      <div class="type-seg"${linked ? ' hidden' : ''}>${[['in', 'Joma'], ['out', 'Khoroch'], ['transfer', 'Transfer']].map(([k, l]) => `<button type="button" data-tsw="${k}" aria-pressed="${type === k}">${l}</button>`).join('')}</div>
       <div class="g2">
         <label class="field"><span>Date</span><input type="date" name="day" value="${esc(e.day || todayBD())}" required></label>
-        <label class="field big-amt"><span>Amount (৳)</span><input type="number" name="amount" min="1" step="1" inputmode="numeric" value="${e.amount || ''}" required autofocus></label>
+        <label class="field big-amt"><span>Amount (৳)</span><input type="number" name="amount" min="1" step="1" inputmode="numeric" value="${e.amount || ''}" required ${linked ? 'readonly' : 'autofocus'}></label>
       </div>
       ${type === 'transfer' ? `<div class="g2">
         <label class="field"><span>From</span><select name="account_id">${accs.map(a => `<option value="${a.id}" ${a.id === e.account_id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
         <label class="field"><span>To</span><select name="to_account_id">${accs.map((a, i) => `<option value="${a.id}" ${(e.to_account_id ? a.id === e.to_account_id : i === 1) ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label></div>`
       : `<div class="g2">
-        <label class="field"><span>Category</span><select name="category_id" id="enCat">${cats.map(c => `<option value="${c.id}" data-kind="${c.kind}" ${c.id === e.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select><small class="muted" id="kindHelp"></small></label>
+        <label class="field"><span>Category</span><select name="category_id" id="enCat"${linked ? ' disabled' : ''}>${cats.map(c => `<option value="${c.id}" data-kind="${c.kind}" ${c.id === e.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select><small class="muted" id="kindHelp"></small></label>
         <label class="field"><span>${type === 'in' ? 'Came into' : 'Paid from'}</span><select name="account_id">${accs.filter(a => a.kind !== 'courier' || a.id === e.account_id).map(a => `<option value="${a.id}" ${a.id === e.account_id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label></div>
         <label class="field" id="partnerRow" hidden><span>Shareholder</span><select name="partner_id"><option value="">Choose…</option>${partners.map(p => `<option value="${p.id}" ${p.id === e.partner_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
         <label class="field"><span>${type === 'in' ? 'Received from' : 'Paid to'} <small>optional</small></span><input name="person" value="${esc(e.person || '')}" list="personList"></label>`}
@@ -1766,7 +1818,7 @@
         <label class="upload"><input type="file" accept="image/*" id="attUp" hidden><span class="btn ghost sm">${attachment ? 'Change receipt photo' : 'Add receipt photo'}</span></label>
         ${attachment ? '<button type="button" class="text-btn" id="attRm">Remove</button>' : ''}</div>
       <p class="err" id="enErr" hidden></p>
-      <div class="row-btns">${e.id && ['super', 'admin'].includes(ME.user.role) ? '<button type="button" class="btn danger sm" id="enDel">Delete</button>' : ''}<span class="spacer"></span>
+      <div class="row-btns">${e.id && (linked ? ME.user.role === 'super' : ['super', 'admin'].includes(ME.user.role)) ? '<button type="button" class="btn danger sm" id="enDel">Delete</button>' : ''}<span class="spacer"></span>
         <button type="button" class="btn ghost" data-x>Cancel</button>${e.id ? '' : '<button type="submit" class="btn ghost" data-again>Save and add another</button>'}<button type="submit" class="btn primary">${e.id ? 'Save changes' : 'Save'}</button></div>
       <datalist id="personList">${[...new Set(ACC.partners.map(p => p.name))].map(n => `<option value="${esc(n)}">`).join('')}</datalist>
     </form>`;
@@ -1800,7 +1852,7 @@
     });
     const del = $('#enDel');
     if (del) del.onclick = async () => {
-      if (!confirm(`Delete TX-${e.id} (${tk(e.amount)})? This is written in the activity log.`)) return;
+      if (!confirm(linked ? `TX-${e.id} is linked to order ${e.order_no || e.ref}. Deleting it makes the order and the cash book disagree (the audit will show it). Delete anyway?` : `Delete TX-${e.id} (${tk(e.amount)})? This is written in the activity log.`)) return;
       try { await api('acc/entries/' + e.id, { method: 'DELETE' }); toast('Entry deleted'); dlg.close(); route(); } catch (err) { fail(err); }
     };
   }
@@ -2250,6 +2302,9 @@
             <div id="addrBox" hidden><label class="field"><span>Address</span><textarea name="address" rows="2"></textarea></label>
               <div class="g2"><label class="field"><span>Area</span><select name="area"><option value="inside">Inside Dhaka</option><option value="outside">Outside Dhaka</option></select></label>
               <label class="field"><span>Delivery charge</span><input type="number" name="delivery" min="0" value="0"></label></div>
+              <div class="g2"><label class="field"><span>Courier cost <small>what you pay the courier</small></span><input type="number" name="courier_cost" min="0" id="cCost"></label>
+              <label class="field"><span>Courier paid</span><select name="courier_paid_from"><option value="">Not yet (courier will cut it later)</option>${SM.accounts.map(a => `<option value="${a.id}">Now, from ${esc(a.name)}</option>`).join('')}</select></label></div>
+              <p class="muted small" id="cKeep"></p>
               <label class="field"><span>The money not paid now will be</span><select name="due_from"><option value="courier">Collected by the courier (cash on delivery)</option><option value="customer">Paid by the customer later (baki)</option></select></label></div>
             <div class="g2"><label class="field"><span>Date <small>change it to enter an old sale</small></span><input type="date" name="day" value="${todayBD()}"></label>
               <label class="field"><span>Sold by</span><input name="sold_by" value="${esc(ME.user.name)}"></label></div>
@@ -2291,6 +2346,10 @@
       $('#sSub').textContent = money(t.sub); $('#sTot').textContent = money(t.total); $('#sDue').textContent = money(Math.max(0, t.total - paid));
       $('#sDue').className = t.total - paid > 0 ? 'down' : '';
       $('#sDueL').textContent = f.delivery_mode.value === 'courier' && f.due_from.value === 'courier' ? 'Courier collects (COD)' : 'Due (baki)';
+      // কুরিয়ার খরচ: এলাকার রেট নিজে বসে, হাতে বদলালে সেটাই থাকে
+      if (!st.costTouched && SM.courierRates) f.courier_cost.value = SM.courierRates[f.area.value === 'outside' ? 'outside' : 'inside'] ?? '';
+      const cc = Number(f.courier_cost.value) || 0;
+      $('#cKeep').textContent = f.delivery_mode.value === 'courier' && t.total ? `Customer pays ${money(t.total)}, courier costs ${money(cc)}, so you keep ${money(t.total - cc)}.${cc > (Number(f.delivery.value) || 0) ? ` The shop pays ${money(cc - (Number(f.delivery.value) || 0))} of the delivery.` : ''}` : '';
     };
     const plist = q => {
       q = q.trim().toLowerCase();
@@ -2321,7 +2380,8 @@
       drawPays(); sync(); if (k === 'part') { const i = $('#pays input'); if (i) i.focus(); }
     };
     $('#addPay').onclick = () => { st.payTouched = true; st.payments.push({ account_id: (SM.accounts.find(a => a.kind === 'bkash') || SM.accounts[0]).id, amount: '' }); drawPays(); };
-    f.discount.oninput = sync; f.delivery.oninput = sync;
+    f.discount.oninput = sync; f.delivery.oninput = sync; f.area.onchange = sync;
+    f.courier_cost.oninput = () => { st.costTouched = true; sync(); };
     f.delivery_mode.onchange = () => { $('#addrBox').hidden = f.delivery_mode.value !== 'courier'; sync(); };
     f.due_from.onchange = sync;
     f.phone.oninput = () => { const ph = f.phone.value.replace(/\D/g, '').slice(-11), c = custList.find(x => x.phone === ph);
